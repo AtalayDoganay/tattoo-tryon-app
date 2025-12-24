@@ -15,10 +15,6 @@ export default function TabLayout() {
       screenOptions={{
         headerShown: false,
         tabBarButton: HapticTab,
-
-        // ✅ This controls the actual screen area background behind tabs
-        sceneContainerStyle: { backgroundColor: theme.background },
-
         tabBarActiveTintColor: theme.tabIconSelected,
         tabBarInactiveTintColor: theme.tabIconDefault,
         tabBarStyle: { backgroundColor: theme.background, borderTopColor: theme.icon },

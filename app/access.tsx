@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import React from 'react';
-import { Pressable, StyleSheet, Text } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { BackHeader } from '@/components/BackHeader';
 import { Card, Screen } from '@/components/Screen';
@@ -28,11 +28,7 @@ function ActionButton({
       onPress={onPress}
       style={({ pressed }) => [
         styles.button,
-        {
-          backgroundColor: bg,
-          borderColor,
-          opacity: pressed ? 0.9 : 1,
-        },
+        { backgroundColor: bg, borderColor, opacity: pressed ? 0.9 : 1 },
       ]}
     >
       <Text style={[styles.buttonText, { color: textColor }]}>{label}</Text>
@@ -45,31 +41,37 @@ export default function AccessScreen() {
   const theme = Colors[scheme];
 
   return (
-    <Screen style={{ gap: 14 }}>
-    
+    <Screen>
       <BackHeader title="Choose Access" />
 
-      <Text style={[styles.subtitle, { color: theme.tabIconDefault }]}>
-        Pick how you want to use the app.
-      </Text>
+      <View style={styles.centerArea}>
+        <Text style={[styles.subtitle, { color: theme.tabIconDefault }]}>
+          Pick how you want to use the app.
+        </Text>
 
-      <Card style={{ gap: 12 }}>
-        <ActionButton
-          label="Client Access"
-          variant="primary"
-          onPress={() => router.push('/gallery')}
-        />
-        <ActionButton
-          label="Manager Access"
-          variant="secondary"
-          onPress={() => router.push('/login')}
-        />
-      </Card>
+        <Card style={{ gap: 12, marginTop: 12 }}>
+          <ActionButton
+            label="Client Access"
+            variant="primary"
+            onPress={() => router.push('/gallery')}
+          />
+          <ActionButton
+            label="Manager Access"
+            variant="secondary"
+            onPress={() => router.push('/login')}
+          />
+        </Card>
+      </View>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  centerArea: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingBottom: 24,
+  },
   subtitle: { fontSize: 14, fontWeight: '700' },
   button: {
     paddingVertical: 14,

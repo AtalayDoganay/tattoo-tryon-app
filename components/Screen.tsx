@@ -1,7 +1,7 @@
-import React from 'react';
-import { View, ViewProps, StyleSheet } from 'react-native';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import React from 'react';
+import { StyleSheet, View, ViewProps } from 'react-native';
 
 export function Screen({ style, ...props }: ViewProps) {
   const scheme = useColorScheme() ?? 'light';
@@ -12,9 +12,8 @@ export function Screen({ style, ...props }: ViewProps) {
 
 export function Card({ style, ...props }: ViewProps) {
   const scheme = useColorScheme() ?? 'light';
-  const theme = Colors[scheme];
 
-  // A “surface” color that looks good in both modes
+  // surface color (card background) that looks good in both modes
   const surface = scheme === 'dark' ? '#1f2123' : '#ffffff';
   const border = scheme === 'dark' ? '#2b2f33' : '#e5e7eb';
 
