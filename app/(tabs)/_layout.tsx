@@ -7,15 +7,23 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
+  const colorScheme = useColorScheme() ?? 'light';
+  const theme = Colors[colorScheme];
 
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
         headerShown: false,
         tabBarButton: HapticTab,
-      }}>
+
+        // ✅ This controls the actual screen area background behind tabs
+        sceneContainerStyle: { backgroundColor: theme.background },
+
+        tabBarActiveTintColor: theme.tabIconSelected,
+        tabBarInactiveTintColor: theme.tabIconDefault,
+        tabBarStyle: { backgroundColor: theme.background, borderTopColor: theme.icon },
+      }}
+    >
       <Tabs.Screen
         name="index"
         options={{
