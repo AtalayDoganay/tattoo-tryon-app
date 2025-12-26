@@ -48,19 +48,21 @@ export default function RootLayout() {
   return (
     <AuthProvider>
       <ThemeProvider value={navTheme}>
-        <Stack screenOptions={{ headerShown: false }}>
-          {/* Tabs */}
-          <Stack.Screen name="(tabs)" />
+      <Stack screenOptions={{ headerShown: false }}>
+        {/* Tabs */}
+        <Stack.Screen name="(tabs)" />
 
-          {/* Non-tab routes */}
-          <Stack.Screen name="access" />
-          <Stack.Screen name="login" />
-          <Stack.Screen name="gallery" />
-          <Stack.Screen name="manager" />
+        {/* Non-tab routes */}
+        <Stack.Screen name="access" />
+        <Stack.Screen name="login" />
+        <Stack.Screen name="gallery" />
+        <Stack.Screen name="tattoo/[id]" />
+        <Stack.Screen name="tryon/[id]" />
+        <Stack.Screen name="manager" />
 
-          {/* If you still have modal */}
-          <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true }} />
-        </Stack>
+        {/* If you still have modal */}
+        <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true }} />
+      </Stack>
 
         <StatusBar style={isDark ? 'light' : 'dark'} />
       </ThemeProvider>
