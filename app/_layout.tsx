@@ -5,18 +5,14 @@ import { useEffect } from 'react';
 import { Platform } from 'react-native';
 import 'react-native-reanimated';
 
+import { AuthProvider } from '@/components/AuthProvider';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-
-export const unstable_settings = {
-  anchor: '(tabs)',
-};
 
 export default function RootLayout() {
   const colorScheme = useColorScheme() ?? 'light';
   const isDark = colorScheme === 'dark';
 
-  // ✅ Keep React Navigation theme in sync with your Colors
   const navTheme = isDark
     ? {
         ...DarkTheme,
@@ -41,7 +37,6 @@ export default function RootLayout() {
         },
       };
 
-  // ✅ Web: ensure page background matches app theme
   useEffect(() => {
     if (Platform.OS === 'web') {
       document.body.style.backgroundColor = isDark
@@ -51,17 +46,24 @@ export default function RootLayout() {
   }, [isDark]);
 
   return (
-    <ThemeProvider value={navTheme}>
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen
-          name="modal"
-          options={{ presentation: 'modal', title: 'Modal', headerShown: true }}
-        />
-        {/* Add other non-tab routes like /login or /manager here later */}
-      </Stack>
+    <AuthProvider>
+      <ThemeProvider value={navTheme}>
+        <Stack screenOptions={{ headerShown: false }}>
+          {/* Tabs */}
+          <Stack.Screen name="(tabs)" />
 
-      <StatusBar style={isDark ? 'light' : 'dark'} />
-    </ThemeProvider>
+          {/* Non-tab routes */}
+          <Stack.Screen name="access" />
+          <Stack.Screen name="login" />
+          <Stack.Screen name="gallery" />
+          <Stack.Screen name="manager" />
+
+          {/* If you still have modal */}
+          <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true }} />
+        </Stack>
+
+        <StatusBar style={isDark ? 'light' : 'dark'} />
+      </ThemeProvider>
+    </AuthProvider>
   );
 }

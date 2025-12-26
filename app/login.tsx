@@ -1,81 +1,115 @@
 import { router } from 'expo-router';
-import React from 'react';
-import { Pressable, StyleSheet, Text } from 'react-native';
+import React, { useState } from 'react';
+import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { BackHeader } from '@/components/BackHeader';
 import { Card, Screen } from '@/components/Screen';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { supabase } from '@/lib/supabase';
 
-function ActionButton({
-  label,
-  onPress,
-  variant,
-}: {
-  label: string;
-  onPress: () => void;
-  variant: 'primary' | 'secondary';
-}) {
+export default function LoginScreen() {
   const scheme = useColorScheme() ?? 'light';
   const theme = Colors[scheme];
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const bg = variant === 'primary' ? theme.tint : 'transparent';
-  const borderColor = variant === 'primary' ? theme.tint : theme.icon;
-  const textColor = variant === 'primary' ? '#fff' : theme.text;
+  async function handleLogin() {
+    if (!email || !password) {
+      Alert.alert('Error', 'Please enter email and password');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        Alert.alert('Login failed', error.message);
+        return;
+      }
+
+      // Login successful - navigate to manager home
+      router.replace('/manager');
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.button,
-        {
-          backgroundColor: bg,
-          borderColor,
-          opacity: pressed ? 0.9 : 1,
-        },
-      ]}
-    >
-      <Text style={[styles.buttonText, { color: textColor }]}>{label}</Text>
-    </Pressable>
-  );
-}
+    <Screen>
+      <BackHeader title="Manager Login" />
 
-export default function AccessScreen() {
-  const scheme = useColorScheme() ?? 'light';
-  const theme = Colors[scheme];
+      <View style={styles.centerArea}>
+        <Text style={[styles.subtitle, { color: theme.tabIconDefault }]}>
+          Sign in to manage your tattoos
+        </Text>
 
-  return (
-    <Screen style={{ gap: 14 }}>
-    
-      <BackHeader title="Choose Access" />
+        <Card style={{ gap: 12, marginTop: 12 }}>
+          <TextInput
+            placeholder="Email"
+            placeholderTextColor={theme.tabIconDefault}
+            value={email}
+            onChangeText={setEmail}
+            editable={!loading}
+            style={[styles.input, { color: theme.text, borderColor: theme.icon }]}
+          />
 
-      <Text style={[styles.subtitle, { color: theme.tabIconDefault }]}>
-        Pick how you want to use the app.
-      </Text>
+          <TextInput
+            placeholder="Password"
+            placeholderTextColor={theme.tabIconDefault}
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+            editable={!loading}
+            style={[styles.input, { color: theme.text, borderColor: theme.icon }]}
+          />
 
-      <Card style={{ gap: 12 }}>
-        <ActionButton
-          label="Client Access"
-          variant="primary"
-          onPress={() => router.push('/gallery')}
-        />
-        <ActionButton
-          label="Manager Access"
-          variant="secondary"
-          onPress={() => router.push('/login')}
-        />
-      </Card>
+          <Pressable
+            onPress={handleLogin}
+            disabled={loading}
+            style={({ pressed }) => [
+              styles.button,
+              {
+                backgroundColor: theme.tint,
+                opacity: pressed || loading ? 0.8 : 1,
+              },
+            ]}
+          >
+            <Text style={styles.buttonText}>
+              {loading ? 'Signing in...' : 'Sign In'}
+            </Text>
+          </Pressable>
+        </Card>
+      </View>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  centerArea: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingBottom: 24,
+  },
   subtitle: { fontSize: 14, fontWeight: '700' },
+  input: {
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 14,
+  },
   button: {
     paddingVertical: 14,
     borderRadius: 14,
-    borderWidth: 1,
     alignItems: 'center',
+    marginTop: 8,
   },
-  buttonText: { fontSize: 16, fontWeight: '900' },
+  buttonText: { fontSize: 16, fontWeight: '900', color: '#fff' },
 });

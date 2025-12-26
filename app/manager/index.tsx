@@ -19,6 +19,7 @@ export default function ManagerHome() {
         if (authErr) throw authErr;
 
         const user = authData.user;
+
         if (!user) {
           router.replace("/login");
           return;
@@ -31,11 +32,33 @@ export default function ManagerHome() {
           .from("profiles")
           .select("role")
           .eq("id", user.id)
-          .single();
+          .maybeSingle();
 
-        if (profileErr) throw profileErr;
+        // If RLS blocks or table missing, you'll land here:
+        if (profileErr) {
+          Alert.alert(
+            "Profile error",
+            profileErr.message ||
+              "Could not read profiles. Check table exists + RLS policies."
+          );
+          await supabase.auth.signOut();
+          router.replace("/login");
+          return;
+        }
 
-        if (profile?.role !== "manager") {
+        // If the row doesn't exist:
+        if (!profile) {
+          Alert.alert(
+            "Profile missing",
+            "No profiles row exists for this user. You need a trigger that creates it on signup, or insert it manually."
+          );
+          await supabase.auth.signOut();
+          router.replace("/login");
+          return;
+        }
+
+        // If role is not manager:
+        if (profile.role !== "manager") {
           Alert.alert("Access denied", "You are not a manager.");
           await supabase.auth.signOut();
           router.replace("/");
@@ -52,6 +75,7 @@ export default function ManagerHome() {
     }
 
     boot();
+
     return () => {
       alive = false;
     };
@@ -78,9 +102,7 @@ export default function ManagerHome() {
         Logged in as: {email ?? "Unknown"}
       </Text>
 
-      <Text>
-        Next: Upload tattoo image → create DB row → mark as published.
-      </Text>
+      <Text>Next: Upload tattoo image → create DB row → mark as published.</Text>
 
       <Pressable
         onPress={signOut}
