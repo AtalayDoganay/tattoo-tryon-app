@@ -52,25 +52,25 @@ export const statueAssets: StatueImage[] = [
     gender: 'male',
     view: 'front',
     label: 'Male - Front',
-    imageUrl: 'https://images.unsplash.com/photo-1578324383196-94ae1a3ce896?w=600&h=800&fit=crop&q=80',
+    imageUrl: '../assets/images/statue-male-front.jpg',
   },
   {
     gender: 'male',
     view: 'back',
     label: 'Male - Back',
-    imageUrl: 'https://images.unsplash.com/photo-1578324383196-94ae1a3ce896?w=600&h=800&fit=crop&q=80',
+    imageUrl: '../assets/images/statue-male-back.jpg',
   },
   {
     gender: 'female',
     view: 'front',
     label: 'Female - Front',
-    imageUrl: 'https://images.unsplash.com/photo-1578324383196-94ae1a3ce896?w=600&h=800&fit=crop&q=80',
+    imageUrl: '../assets/images/statue-female-front.jpg',
   },
   {
     gender: 'female',
     view: 'back',
     label: 'Female - Back',
-    imageUrl: 'https://images.unsplash.com/photo-1578324383196-94ae1a3ce896?w=600&h=800&fit=crop&q=80',
+    imageUrl: '../assets/images/statue-female-back.jpg',
   },
 ];
 

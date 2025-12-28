@@ -52,6 +52,14 @@ export default function RootLayout() {
         {/* Tabs */}
         <Stack.Screen name="(tabs)" />
 
+        {/* New flow: Info -> Menu -> Flash/Custom */}
+        <Stack.Screen name="info" />
+        <Stack.Screen name="menu" />
+        <Stack.Screen name="flash" />
+        <Stack.Screen name="flash/[id]" />
+        <Stack.Screen name="flash/tryon/[id]" />
+        <Stack.Screen name="custom" />
+
         {/* Non-tab routes */}
         <Stack.Screen name="access" />
         <Stack.Screen name="login" />

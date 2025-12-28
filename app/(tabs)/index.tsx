@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import React from 'react';
 import { Pressable, StyleSheet, Text } from 'react-native';
 
-import { Card, Screen } from '@/components/Screen';
+import { Screen } from '@/components/Screen';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
@@ -11,55 +11,35 @@ export default function HomeScreen() {
   const theme = Colors[scheme];
 
   return (
-    <Screen style={{ justifyContent: 'center', gap: 16 }}>
-      <Text style={[textStyles.kicker, { color: theme.tabIconDefault }]}>Tattoo Studio</Text>
-
-      <Text style={[textStyles.title, { color: theme.text }]}>
-        Welcome to Tattoo Artist&apos;s Gallery
-      </Text>
+    <Screen style={{ justifyContent: 'center', alignItems: 'center', gap: 24 }}>
+      <Text style={[textStyles.bigTitle, { color: theme.text }]}>Hannah</Text>
 
       <Text style={[textStyles.subtitle, { color: theme.tabIconDefault }]}>
-        You can see all my tattoos.
+        Hannah will be doing UI
       </Text>
 
-      <Card style={{ gap: 12 }}>
-        <Text style={[textStyles.cardText, { color: theme.text }]}>
-          Explore designs, preview them on a statue, and choose your next tattoo.
-        </Text>
-
-        <Pressable
-          onPress={() => router.push('/access')}
-          style={({ pressed }) => [
-            boxStyles.primaryBtn,
-            { backgroundColor: theme.tint, opacity: pressed ? 0.9 : 1 },
-          ]}
-        >
-          <Text style={boxStyles.primaryBtnText}>Next</Text>
-        </Pressable>
-      </Card>
+      <Pressable
+        onPress={() => router.push('/info')}
+        style={({ pressed }) => [
+          boxStyles.primaryBtn,
+          { backgroundColor: theme.tint, opacity: pressed ? 0.9 : 1 },
+        ]}
+      >
+        <Text style={[boxStyles.primaryBtnText, { color: scheme === 'dark' ? '#151718' : '#fff' }]}>Next</Text>
+      </Pressable>
     </Screen>
   );
 }
 
 const textStyles = StyleSheet.create({
-  kicker: {
-    fontSize: 13,
+  bigTitle: {
+    fontSize: 48,
     fontWeight: '900',
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-  },
-  title: {
-    fontSize: 30,
-    fontWeight: '900',
-    lineHeight: 34,
+    lineHeight: 52,
   },
   subtitle: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  cardText: {
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
 
