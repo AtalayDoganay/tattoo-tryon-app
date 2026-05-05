@@ -1,194 +1,167 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Dimensions,
+  FlatList,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import { BackHeader } from '@/components/BackHeader';
 import { LoadableImage } from '@/components/LoadableImage';
-import { Screen } from '@/components/Screen';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { fetchTattoos } from '@/lib/tattoo-data';
-import { Tattoo } from '@/lib/types';
+import { AppTheme, Fonts } from '@/constants/theme';
+import { supabase } from '@/lib/supabase';
+import { DbTattoo } from '@/lib/types';
 
-const GRID_COLUMNS = 2;
-const CARD_PADDING = 16;
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const H_PAD = 16;
 const CARD_GAP = 12;
-const IMAGE_HEIGHT = 240;
+const CARD_WIDTH = (SCREEN_WIDTH - H_PAD * 2 - CARD_GAP) / 2;
+const IMAGE_HEIGHT = 200;
 
 export default function GalleryScreen() {
-  const scheme = useColorScheme() ?? 'light';
-  const theme = Colors[scheme];
-  const [tattoos, setTattoos] = useState<Tattoo[]>([]);
+  const { shopId, shopName } = useLocalSearchParams<{ shopId: string; shopName: string }>();
+  const [tattoos, setTattoos] = useState<DbTattoo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!shopId) return;
+
     async function loadTattoos() {
       try {
         setError(null);
-        const data = await fetchTattoos();
-        setTattoos(data);
-      } catch (err) {
-        console.error('Error loading tattoos:', err);
-        setError('Failed to load tattoos. Please try again.');
+        const { data, error: sbError } = await supabase
+          .from('tattoos')
+          .select('*')
+          .eq('shop_id', shopId)
+          .order('created_at', { ascending: false });
+
+        if (sbError) throw sbError;
+        setTattoos((data as DbTattoo[]) ?? []);
+      } catch {
+        setError('Failed to load designs. Please try again.');
       } finally {
         setLoading(false);
       }
     }
 
     loadTattoos();
-  }, []);
+  }, [shopId]);
 
-  function handleTattooPress(tattooId: string) {
-    router.push(`/tattoo/${tattooId}`);
-  }
-
-  function renderTattooCard({ item }: { item: Tattoo }) {
+  function renderCard({ item }: { item: DbTattoo }) {
     return (
       <Pressable
-        onPress={() => handleTattooPress(item.id)}
-        style={({ pressed }) => [
-          styles.cardContainer,
-          { flex: 1, opacity: pressed ? 0.7 : 1 },
+        style={({ pressed }: { pressed: boolean }) => [
+          styles.card,
+          { opacity: pressed ? 0.8 : 1 },
         ]}
+        onPress={() => router.push(`/tattoo/${item.id}`)}
       >
-        <View
-          style={[
-            styles.card,
-            {
-              backgroundColor: scheme === 'dark' ? '#1f2123' : '#ffffff',
-              borderColor: scheme === 'dark' ? '#2b2f33' : '#e5e7eb',
-            },
-          ]}
-        >
-          <LoadableImage
-            uri={item.imageUrl}
-            width={150}
-            height={IMAGE_HEIGHT}
-            borderRadius={10}
-            contentFit="cover"
-          />
-
-          <View style={styles.cardInfo}>
-            <Text
-              style={[styles.cardTitle, { color: theme.text }]}
-              numberOfLines={2}
-            >
-              {item.title}
-            </Text>
-            <Text style={[styles.cardDate, { color: theme.tabIconDefault }]}>
-              {new Date(item.createdAt).toLocaleDateString()}
-            </Text>
-          </View>
+        <LoadableImage
+          uri={item.image_url}
+          width={CARD_WIDTH}
+          height={IMAGE_HEIGHT}
+          borderRadius={0}
+          contentFit="cover"
+        />
+        <View style={styles.cardInfo}>
+          <Text style={styles.cardName} numberOfLines={2}>
+            {item.name}
+          </Text>
+          {item.style ? (
+            <View style={styles.stylePill}>
+              <Text style={styles.stylePillText}>{item.style}</Text>
+            </View>
+          ) : null}
         </View>
       </Pressable>
     );
   }
 
-  if (loading) {
-    return (
-      <Screen>
-        <BackHeader title="Tattoo Gallery" />
-        <View style={styles.centerContainer}>
-          <Text style={{ color: theme.text, fontSize: 14 }}>Loading gallery...</Text>
-        </View>
-      </Screen>
-    );
-  }
-
-  if (error) {
-    return (
-      <Screen>
-        <BackHeader title="Tattoo Gallery" />
-        <View style={styles.centerContainer}>
-          <Text style={{ color: theme.text, fontWeight: '700', marginBottom: 8 }}>
-            {error}
-          </Text>
-          <Pressable
-            onPress={() => {
-              setLoading(true);
-              setError(null);
-            }}
-            style={({ pressed }) => [
-              styles.retryButton,
-              {
-                backgroundColor: theme.tint,
-                opacity: pressed ? 0.8 : 1,
-              },
-            ]}
-          >
-            <Text style={styles.retryText}>Try Again</Text>
-          </Pressable>
-        </View>
-      </Screen>
-    );
-  }
-
   return (
-    <Screen style={{ paddingHorizontal: CARD_PADDING, paddingVertical: 0 }}>
-      <View style={{ paddingVertical: 16 }}>
-        <BackHeader title="Tattoo Gallery" />
-      </View>
-
+    <View style={styles.screen}>
+      <BackHeader title={shopName ?? 'Gallery'} />
       <FlatList
         data={tattoos}
-        renderItem={renderTattooCard}
-        keyExtractor={(item) => `tattoo-${item.id}`}
-        numColumns={GRID_COLUMNS}
-        columnWrapperStyle={{
-          gap: CARD_GAP,
-          marginBottom: CARD_GAP,
-        }}
-        scrollEnabled={true}
+        keyExtractor={(item: DbTattoo) => item.id}
+        numColumns={2}
+        columnWrapperStyle={styles.row}
+        renderItem={renderCard}
         contentContainerStyle={styles.listContent}
         ListEmptyComponent={
-          <View style={styles.centerContainer}>
-            <Text style={{ color: theme.text }}>No tattoos available</Text>
-          </View>
+          loading ? (
+            <ActivityIndicator
+              color={AppTheme.accent}
+              size="large"
+              style={styles.loader}
+            />
+          ) : error ? (
+            <Text style={styles.statusText}>{error}</Text>
+          ) : (
+            <Text style={styles.statusText}>No designs yet.</Text>
+          )
         }
       />
-    </Screen>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  centerContainer: {
+  screen: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: AppTheme.bg,
+    paddingHorizontal: H_PAD,
   },
   listContent: {
-    paddingBottom: 24,
+    paddingBottom: 40,
   },
-  cardContainer: {
-    marginBottom: 0,
+  row: {
+    gap: CARD_GAP,
+    marginBottom: CARD_GAP,
   },
   card: {
-    borderRadius: 12,
+    width: CARD_WIDTH,
+    backgroundColor: AppTheme.surface,
     borderWidth: 1,
+    borderColor: AppTheme.border,
+    borderRadius: 14,
     overflow: 'hidden',
   },
   cardInfo: {
     padding: 12,
-    gap: 4,
+    gap: 8,
   },
-  cardTitle: {
+  cardName: {
     fontSize: 14,
+    fontFamily: Fonts?.serif ?? 'serif',
+    color: AppTheme.text,
     fontWeight: '700',
-    lineHeight: 16,
+    lineHeight: 20,
   },
-  cardDate: {
-    fontSize: 12,
-    fontWeight: '500',
+  stylePill: {
+    alignSelf: 'flex-start',
+    backgroundColor: AppTheme.accent,
+    borderRadius: 20,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
   },
-  retryButton: {
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 8,
-  },
-  retryText: {
+  stylePillText: {
     color: '#fff',
+    fontSize: 11,
     fontWeight: '700',
+    fontFamily: Fonts?.sans ?? 'system-ui',
+  },
+  loader: {
+    marginTop: 48,
+  },
+  statusText: {
+    color: AppTheme.muted,
     fontSize: 14,
+    textAlign: 'center',
+    marginTop: 48,
   },
 });

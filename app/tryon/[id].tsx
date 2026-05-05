@@ -14,8 +14,9 @@ import { BackHeader } from '@/components/BackHeader';
 import { Screen } from '@/components/Screen';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { fetchTattooById, getStatueImage } from '@/lib/tattoo-data';
-import { StatueGender, StatueView, Tattoo, TryOnState } from '@/lib/types';
+import { supabase } from '@/lib/supabase';
+import { getStatueImage } from '@/lib/tattoo-data';
+import { DbTattoo, StatueGender, StatueView, TryOnState } from '@/lib/types';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const STATUE_WIDTH = SCREEN_WIDTH - 32;
@@ -25,7 +26,7 @@ export default function TryOnScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const scheme = useColorScheme() ?? 'light';
   const theme = Colors[scheme];
-  const [tattoo, setTattoo] = useState<Tattoo | null>(null);
+  const [tattoo, setTattoo] = useState<DbTattoo | null>(null);
   const [loading, setLoading] = useState(true);
   const [statueGender, setStatueGender] = useState<StatueGender>('male');
   const [statueView, setStatueView] = useState<StatueView>('front');
@@ -44,8 +45,13 @@ export default function TryOnScreen() {
     async function loadTattoo() {
       if (!id) return;
       try {
-        const data = await fetchTattooById(id);
-        setTattoo(data);
+        const { data, error } = await supabase
+          .from('tattoos')
+          .select('*')
+          .eq('id', id)
+          .single();
+        if (error) throw error;
+        setTattoo(data as DbTattoo);
       } catch (error) {
         console.error('Error loading tattoo:', error);
       } finally {
@@ -59,7 +65,7 @@ export default function TryOnScreen() {
   // Load statue image when gender or view changes
   useEffect(() => {
     const statue = getStatueImage(statueGender, statueView);
-    setStatueImageUrl(statue.imageUrl);
+    setStatueImageUrl(statue?.imageUrl ?? null);
   }, [statueGender, statueView]);
 
   function handleTattooGestureStart(event: GestureResponderEvent) {
@@ -148,7 +154,7 @@ export default function TryOnScreen() {
 
   return (
     <Screen style={{ gap: 12, justifyContent: 'flex-start' }}>
-      <BackHeader title={`Try On: ${tattoo.title}`} />
+      <BackHeader title={`Try On: ${tattoo.name}`} />
 
       {/* Statue Selector */}
       <View style={styles.selectorContainer}>
@@ -259,7 +265,7 @@ export default function TryOnScreen() {
           ]}
         >
           <Image
-            source={{ uri: tattoo.imageUrl }}
+            source={{ uri: tattoo.image_url }}
             style={styles.tattooImage}
             contentFit="contain"
           />

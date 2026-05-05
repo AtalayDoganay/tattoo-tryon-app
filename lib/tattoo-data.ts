@@ -1,4 +1,30 @@
-import { StatueImage, Tattoo } from './types';
+import { Shop, StatueImage, Tattoo } from './types';
+import { supabase } from './supabase';
+
+type ShopRow = {
+  id: string;
+  name: string;
+  slug: string;
+  owner_user_id: string;
+  tattoos: { count: number }[];
+};
+
+export async function fetchShops(): Promise<Shop[]> {
+  const { data, error } = await supabase
+    .from('shops')
+    .select('*, tattoos(count)')
+    .order('name');
+
+  if (error) throw error;
+
+  return (data as ShopRow[]).map((s) => ({
+    id: s.id,
+    name: s.name,
+    slug: s.slug,
+    ownerUserId: s.owner_user_id,
+    designCount: s.tattoos[0]?.count ?? 0,
+  }));
+}
 
 // Placeholder tattoo data - easily swappable with Supabase query
 export const placeholderTattoos: Tattoo[] = [

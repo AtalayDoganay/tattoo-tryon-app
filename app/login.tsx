@@ -1,115 +1,159 @@
 import { router } from 'expo-router';
 import React, { useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { BackHeader } from '@/components/BackHeader';
-import { Card, Screen } from '@/components/Screen';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { AppTheme, Fonts } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 
 export default function LoginScreen() {
-  const scheme = useColorScheme() ?? 'light';
-  const theme = Colors[scheme];
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const insets = useSafeAreaInsets();
 
   async function handleLogin() {
-    if (!email || !password) {
-      Alert.alert('Error', 'Please enter email and password');
+    if (!email.trim() || !password) {
+      setErrorMsg('Please enter your email and password.');
       return;
     }
 
     setLoading(true);
+    setErrorMsg(null);
+
     try {
       const { error } = await supabase.auth.signInWithPassword({
-        email,
+        email: email.trim(),
         password,
       });
 
       if (error) {
-        Alert.alert('Login failed', error.message);
+        setErrorMsg(error.message);
         return;
       }
 
-      // Login successful - navigate to manager home
       router.replace('/manager');
-    } catch (e: any) {
-      Alert.alert('Error', e?.message ?? 'Unknown error');
+    } catch (e: unknown) {
+      setErrorMsg(e instanceof Error ? e.message : 'An unexpected error occurred.');
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <Screen>
-      <BackHeader title="Manager Login" />
+    <View
+      style={[
+        styles.screen,
+        { paddingTop: insets.top, paddingBottom: insets.bottom + 24 },
+      ]}
+    >
+      <View style={styles.form}>
+        <Text style={styles.heading}>Manager Login</Text>
+        <Text style={styles.sub}>Studio access only</Text>
 
-      <View style={styles.centerArea}>
-        <Text style={[styles.subtitle, { color: theme.tabIconDefault }]}>
-          Sign in to manage your tattoos
-        </Text>
+        <TextInput
+          placeholder="Email"
+          placeholderTextColor={AppTheme.muted}
+          value={email}
+          onChangeText={setEmail}
+          autoCapitalize="none"
+          keyboardType="email-address"
+          editable={!loading}
+          style={styles.input}
+        />
 
-        <Card style={{ gap: 12, marginTop: 12 }}>
-          <TextInput
-            placeholder="Email"
-            placeholderTextColor={theme.tabIconDefault}
-            value={email}
-            onChangeText={setEmail}
-            editable={!loading}
-            style={[styles.input, { color: theme.text, borderColor: theme.icon }]}
-          />
+        <TextInput
+          placeholder="Password"
+          placeholderTextColor={AppTheme.muted}
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry
+          editable={!loading}
+          style={styles.input}
+        />
 
-          <TextInput
-            placeholder="Password"
-            placeholderTextColor={theme.tabIconDefault}
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            editable={!loading}
-            style={[styles.input, { color: theme.text, borderColor: theme.icon }]}
-          />
+        <Pressable
+          onPress={handleLogin}
+          disabled={loading}
+          style={({ pressed }: { pressed: boolean }) => [
+            styles.btn,
+            { opacity: pressed || loading ? 0.85 : 1 },
+          ]}
+        >
+          {loading ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <Text style={styles.btnText}>Sign In</Text>
+          )}
+        </Pressable>
 
-          <Pressable
-            onPress={handleLogin}
-            disabled={loading}
-            style={({ pressed }) => [
-              styles.button,
-              {
-                backgroundColor: theme.tint,
-                opacity: pressed || loading ? 0.8 : 1,
-              },
-            ]}
-          >
-            <Text style={styles.buttonText}>
-              {loading ? 'Signing in...' : 'Sign In'}
-            </Text>
-          </Pressable>
-        </Card>
+        {errorMsg ? <Text style={styles.error}>{errorMsg}</Text> : null}
       </View>
-    </Screen>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  centerArea: {
+  screen: {
     flex: 1,
+    backgroundColor: AppTheme.bg,
     justifyContent: 'center',
-    paddingBottom: 24,
+    paddingHorizontal: 24,
   },
-  subtitle: { fontSize: 14, fontWeight: '700' },
-  input: {
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 12,
+  form: {
+    gap: 0,
+  },
+  heading: {
+    fontSize: 26,
+    fontFamily: Fonts?.serif ?? 'serif',
+    color: AppTheme.text,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  sub: {
     fontSize: 14,
+    color: AppTheme.muted,
+    fontFamily: Fonts?.sans ?? 'system-ui',
+    marginBottom: 28,
   },
-  button: {
-    paddingVertical: 14,
+  input: {
+    backgroundColor: AppTheme.surface,
+    borderColor: AppTheme.border,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+    color: AppTheme.text,
+    fontSize: 16,
+    marginBottom: 12,
+  },
+  btn: {
+    backgroundColor: AppTheme.accent,
+    paddingVertical: 16,
     borderRadius: 14,
     alignItems: 'center',
-    marginTop: 8,
+    justifyContent: 'center',
+    marginTop: 4,
+    height: 52,
   },
-  buttonText: { fontSize: 16, fontWeight: '900', color: '#fff' },
+  btnText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '900',
+    fontFamily: Fonts?.sans ?? 'system-ui',
+  },
+  error: {
+    color: AppTheme.accent,
+    fontSize: 13,
+    fontFamily: Fonts?.sans ?? 'system-ui',
+    textAlign: 'center',
+    marginTop: 12,
+  },
 });
