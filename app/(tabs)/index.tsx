@@ -28,6 +28,7 @@ export default function HomeScreen() {
   useEffect(() => {
     fetchShops()
       .then(setShops)
+      .catch((err) => console.error('[HomeScreen] fetchShops failed:', err))
       .finally(() => setLoading(false));
   }, []);
 

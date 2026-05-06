@@ -15,7 +15,12 @@ export async function fetchShops(): Promise<Shop[]> {
     .select('*, tattoos(count)')
     .order('name');
 
-  if (error) throw error;
+  if (error) {
+    console.error('[fetchShops] Supabase error:', error);
+    throw error;
+  }
+
+  console.log('[fetchShops] raw data:', JSON.stringify(data));
 
   return (data as ShopRow[]).map((s) => ({
     id: s.id,

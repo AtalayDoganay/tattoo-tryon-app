@@ -5,6 +5,7 @@ import {
   ActivityIndicator,
   FlatList,
   Image,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -38,6 +39,7 @@ export default function ManagerDashboard() {
   // Add-tattoo form
   const [showForm, setShowForm] = useState(false);
   const [pickedUri, setPickedUri] = useState<string | null>(null);
+  const [pickedBase64, setPickedBase64] = useState<string | null>(null);
   const [formName, setFormName] = useState('');
   const [formStyle, setFormStyle] = useState('');
   const [formDesc, setFormDesc] = useState('');
@@ -100,9 +102,11 @@ export default function ManagerDashboard() {
       mediaTypes: ['images'] as ImagePicker.MediaType[],
       allowsEditing: true,
       quality: 0.8,
+      base64: true,
     });
     if (!result.canceled) {
       setPickedUri(result.assets[0].uri);
+      setPickedBase64(result.assets[0].base64 ?? null);
     }
   }
 
@@ -116,15 +120,26 @@ export default function ManagerDashboard() {
     setFormError(null);
 
     try {
-      const ext = pickedUri.split('.').pop();
+      const ext = Platform.OS === 'web' ? 'jpeg' : (pickedUri.split('.').pop() ?? 'jpeg');
       const path = `${session.user.id}/${Date.now()}.${ext}`;
 
-      const response = await fetch(pickedUri);
-      const blob = await response.blob();
+      let uploadData: Blob | ArrayBuffer;
+      if (Platform.OS === 'web') {
+        const base64 = pickedBase64!;
+        const byteCharacters = atob(base64);
+        const byteArray = new Uint8Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteArray[i] = byteCharacters.charCodeAt(i);
+        }
+        uploadData = byteArray.buffer;
+      } else {
+        const response = await fetch(pickedUri);
+        uploadData = await response.blob();
+      }
 
       const { error: uploadErr } = await supabase.storage
         .from('tattoo-images')
-        .upload(path, blob);
+        .upload(path, uploadData, { contentType: 'image/jpeg' });
       if (uploadErr) throw uploadErr;
 
       const { data: urlData } = supabase.storage
@@ -157,6 +172,7 @@ export default function ManagerDashboard() {
   function resetForm() {
     setShowForm(false);
     setPickedUri(null);
+    setPickedBase64(null);
     setFormName('');
     setFormStyle('');
     setFormDesc('');
