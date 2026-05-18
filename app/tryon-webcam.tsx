@@ -4,6 +4,7 @@ import {
   Dimensions,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -13,14 +14,111 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppTheme, Fonts } from '@/constants/theme';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
-const CONTROLS_HEIGHT = 240;
+const CONTROLS_HEIGHT = 280;
 const CANVAS_HEIGHT = SCREEN_HEIGHT - CONTROLS_HEIGHT;
+const BASE_SHOULDER_WIDTH = 200; // px at normal standing distance
 
 const MEDIAPIPE_SCRIPTS = [
   'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js',
   'https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js',
   'https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js',
 ];
+
+type BodyPart = 'chest' | 'left_arm' | 'right_arm' | 'left_shoulder' | 'right_shoulder' | 'neck';
+
+const BODY_PARTS: { key: BodyPart; label: string }[] = [
+  { key: 'chest', label: 'Chest' },
+  { key: 'left_arm', label: 'L.Arm' },
+  { key: 'right_arm', label: 'R.Arm' },
+  { key: 'left_shoulder', label: 'L.Shoulder' },
+  { key: 'right_shoulder', label: 'R.Shoulder' },
+  { key: 'neck', label: 'Neck' },
+];
+
+interface DebugInfo {
+  rotY: number;
+  distScale: number;
+  visibility: number;
+  isPalmFacing?: boolean;
+  handAngleDeg?: number;
+}
+
+// Draw tattoo mapped to a detected hand — handles in-plane rotation, palm/back flip, edge compression
+function drawTattooOnHand(
+  ctx: any,
+  handLandmarks: any[],
+  isRightHand: boolean,
+  canvas: any,
+  img: any,
+  userScale: number,
+  userRotation: number,
+  opacity: number,
+  blendMode: 'multiply' | 'source-over',
+  mX: (x: number) => number
+): { isPalmFacing: boolean; handAngleDeg: number } | null {
+  if (!handLandmarks || !img?.complete || img.naturalWidth === 0) return null;
+
+  const wrist = handLandmarks[0];
+  const indexMCP = handLandmarks[5];
+  const pinkyMCP = handLandmarks[17];
+
+  const wristX = mX(wrist.x);
+  const wristY = wrist.y * canvas.height;
+  const indexX = mX(indexMCP.x);
+  const indexY = indexMCP.y * canvas.height;
+  const pinkyX = mX(pinkyMCP.x);
+  const pinkyY = pinkyMCP.y * canvas.height;
+
+  // Centroid of wrist + index knuckle + pinky knuckle = hand center
+  const centerX = (wristX + indexX + pinkyX) / 3;
+  const centerY = (wristY + indexY + pinkyY) / 3;
+
+  // Angle: knuckle midpoint → wrist gives "hand up" direction
+  const knuckleMidX = (indexX + pinkyX) / 2;
+  const knuckleMidY = (indexY + pinkyY) / 2;
+  const handAngle = Math.atan2(wristY - knuckleMidY, wristX - knuckleMidX);
+  const handAngleDeg = (handAngle * 180) / Math.PI;
+
+  // Cross product of (wrist→index) × (wrist→pinky) to detect palm vs back
+  const v1x = indexX - wristX;
+  const v1y = indexY - wristY;
+  const v2x = pinkyX - wristX;
+  const v2y = pinkyY - wristY;
+  const crossZ = v1x * v2y - v1y * v2x;
+  // Right hand: palm facing camera → index on left of pinky → crossZ < 0
+  const isPalmFacing = isRightHand ? crossZ < 0 : crossZ > 0;
+
+  // Width of hand in pixels for scale + compression
+  const handPixelWidth = Math.sqrt((indexX - pinkyX) ** 2 + (indexY - pinkyY) ** 2);
+  const compressionFactor = Math.max(0.05, Math.min(1.0, handPixelWidth / 80));
+  const baseSize = 90 * userScale * (handPixelWidth / 80);
+
+  const applyHandTransform = (targetCtx: any, ox = 0, oy = 0) => {
+    targetCtx.translate(centerX + ox, centerY + oy);
+    targetCtx.rotate(handAngle + Math.PI / 2 + (userRotation * Math.PI) / 180);
+    if (!isPalmFacing) targetCtx.scale(-1, 1); // flip to back-of-hand view
+    targetCtx.scale(compressionFactor, 1);      // compress when hand is edge-on
+    targetCtx.drawImage(img, -baseSize / 2, -baseSize / 2, baseSize, baseSize);
+  };
+
+  // Shadow pass
+  ctx.save();
+  ctx.globalAlpha = 0.15;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.filter = 'blur(4px)';
+  applyHandTransform(ctx, 2, 3);
+  ctx.restore();
+  ctx.filter = 'none';
+
+  // Main tattoo pass
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  ctx.globalCompositeOperation = blendMode;
+  applyHandTransform(ctx);
+  ctx.restore();
+
+  return { isPalmFacing, handAngleDeg };
+}
 
 export default function TryOnWebcamScreen() {
   const insets = useSafeAreaInsets();
@@ -32,29 +130,25 @@ export default function TryOnWebcamScreen() {
   const [blendMode, setBlendMode] = useState<'multiply' | 'source-over'>('multiply');
   const [status, setStatus] = useState<'loading' | 'ready' | 'no_body'>('loading');
   const [manualMode, setManualMode] = useState(true);
-  const [manualX, setManualX] = useState(
-    Dimensions.get('window').width / 2
-  );
-  const [manualY, setManualY] = useState(
-    (Dimensions.get('window').height - 300) / 2
-  );
-
-  // Confirmation flow state
+  const [manualX, setManualX] = useState(Dimensions.get('window').width / 2);
+  const [manualY, setManualY] = useState((Dimensions.get('window').height - 300) / 2);
   const [showConfirm, setShowConfirm] = useState(false);
   const [isConfirmed, setIsConfirmed] = useState(false);
   const [anchorSet, setAnchorSet] = useState(false);
-
-  // Mirror state
   const [isMirrored, setIsMirrored] = useState(true);
+  const [showDebug, setShowDebug] = useState(true);
+  const [debugInfo, setDebugInfo] = useState<DebugInfo>({ rotY: 0, distScale: 1, visibility: 0 });
+  const [bodyPart, setBodyPart] = useState<BodyPart>('chest');
 
   const videoRef = useRef<any>(null);
   const canvasRef = useRef<any>(null);
   const tattooImageRef = useRef<any>(null);
+  const offscreenCanvas = useRef<any>(null);
 
-  // Refs to avoid stale closures in onResults
-  const userScaleRef = useRef(userScale);
-  const userRotationRef = useRef(userRotation);
-  const opacityRef = useRef(opacity);
+  // Stale-closure refs — every state var used in onResults needs a paired ref
+  const userScaleRef = useRef(1.0);
+  const userRotationRef = useRef(0);
+  const opacityRef = useRef(1.0);
   const blendModeRef = useRef<'multiply' | 'source-over'>('multiply');
   const manualModeRef = useRef(true);
   const manualXRef = useRef(Dimensions.get('window').width / 2);
@@ -67,6 +161,10 @@ export default function TryOnWebcamScreen() {
   const lastDrawnX = useRef(0);
   const lastDrawnY = useRef(0);
   const isMirroredRef = useRef(true);
+  const showDebugRef = useRef(true);
+  const bodyPartRef = useRef<BodyPart>('chest');
+  const lastTorsoX = useRef(0);
+  const lastTorsoY = useRef(0);
 
   // Drag state refs
   const isDragging = useRef(false);
@@ -86,6 +184,8 @@ export default function TryOnWebcamScreen() {
   useEffect(() => { isConfirmedRef.current = isConfirmed; }, [isConfirmed]);
   useEffect(() => { anchorSetRef.current = anchorSet; }, [anchorSet]);
   useEffect(() => { isMirroredRef.current = isMirrored; }, [isMirrored]);
+  useEffect(() => { showDebugRef.current = showDebug; }, [showDebug]);
+  useEffect(() => { bodyPartRef.current = bodyPart; }, [bodyPart]);
 
   useEffect(() => {
     if (!tattooBase64 || typeof window === 'undefined') return;
@@ -101,10 +201,7 @@ export default function TryOnWebcamScreen() {
     async function loadScripts() {
       for (const src of MEDIAPIPE_SCRIPTS) {
         await new Promise<void>((resolve, reject) => {
-          if (document.querySelector(`script[src="${src}"]`)) {
-            resolve();
-            return;
-          }
+          if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
           const script = document.createElement('script');
           script.src = src;
           script.crossOrigin = 'anonymous';
@@ -132,7 +229,7 @@ export default function TryOnWebcamScreen() {
     canvas.height = canvas.offsetHeight;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw camera feed — mirrored or normal
+    // Draw camera feed (mirrored or straight)
     if (isMirroredRef.current) {
       ctx.save();
       ctx.scale(-1, 1);
@@ -142,41 +239,116 @@ export default function TryOnWebcamScreen() {
       ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
     }
 
-    if (!results.poseLandmarks) {
-      setStatus('no_body');
-      return;
-    }
+    if (!results.poseLandmarks) { setStatus('no_body'); return; }
     setStatus('ready');
 
-    let x = 0, y = 0, size = 100;
-
-    // Mirror-aware X converter: flips landmark X for mirrored feeds
+    // Mirror-aware X converter
     const mX = (lx: number) => isMirroredRef.current
       ? (1 - lx) * canvas.width
       : lx * canvas.width;
 
-    // Always compute torso center from landmarks
-    const landmarks = results.poseLandmarks;
-    const ls = landmarks[11]; // left shoulder
-    const rs = landmarks[12]; // right shoulder
-    const lh = landmarks[23]; // left hip
-    const rh = landmarks[24]; // right hip
+    const landmarks2d = results.poseLandmarks;
+    const landmarks3d = results.poseWorldLandmarks;
+    const segMask = results.segmentationMask;
 
-    // Auto-detect mirroring from wrist positions each frame
-    const rightWrist = landmarks[16];
-    const leftWrist = landmarks[15];
+    const ls = landmarks2d[11]; // left shoulder
+    const rs = landmarks2d[12]; // right shoulder
+    const lh = landmarks2d[23]; // left hip
+    const rh = landmarks2d[24]; // right hip
+
+    // Auto-detect mirroring each frame from wrist positions
+    const rightWrist = landmarks2d[16];
+    const leftWrist = landmarks2d[15];
     if (rightWrist.visibility > 0.7 && leftWrist.visibility > 0.7) {
       const detectedMirror = rightWrist.x < leftWrist.x;
-      if (detectedMirror !== isMirroredRef.current) {
-        setIsMirrored(detectedMirror);
-      }
+      if (detectedMirror !== isMirroredRef.current) setIsMirrored(detectedMirror);
     }
 
+    // 2D torso center (screen pixels)
     const torsoX = (mX(ls.x) + mX(rs.x)) / 2;
     const torsoY = ((ls.y + rs.y + lh.y + rh.y) / 4) * canvas.height;
-    size = Math.abs(mX(rs.x) - mX(ls.x)) * 0.5;
+    const screenShoulderWidth = Math.abs(mX(rs.x) - mX(ls.x));
 
-    // Capture anchor offset on the first confirmed frame
+    // 3D perspective — decompose body rotation from world landmarks
+    let compressionX = 1; // 1=facing camera, 0=fully sideways
+    let compressionY = 1; // 1=upright, <1=leaning
+    let skewFactor = 0;   // perspective slant left/right
+    const distanceScale = screenShoulderWidth / BASE_SHOULDER_WIDTH;
+    const clampedDistScale = Math.max(0.3, Math.min(3.0, distanceScale));
+    let rotationYDeg = 0;
+
+    if (landmarks3d) {
+      const ls3d = landmarks3d[11];
+      const rs3d = landmarks3d[12];
+      const lh3d = landmarks3d[23];
+      const rh3d = landmarks3d[24];
+
+      const shoulderDX = rs3d.x - ls3d.x;
+      const shoulderDZ = rs3d.z - ls3d.z;
+      const rotationY = Math.atan2(shoulderDZ, shoulderDX);
+      rotationYDeg = (rotationY * 180) / Math.PI;
+
+      const shoulderMidZ = (ls3d.z + rs3d.z) / 2;
+      const hipMidZ = (lh3d.z + rh3d.z) / 2;
+      const shoulderMidY = (ls3d.y + rs3d.y) / 2;
+      const hipMidY = (lh3d.y + rh3d.y) / 2;
+      const rotationX = Math.atan2(hipMidZ - shoulderMidZ, hipMidY - shoulderMidY);
+
+      compressionX = Math.cos(rotationY);
+      compressionY = Math.cos(rotationX);
+      skewFactor = Math.sin(rotationY) * 0.15;
+    }
+
+    // Fade tattoo when landmarks leave frame
+    const avgVisibility = (
+      (ls.visibility ?? 1) + (rs.visibility ?? 1) +
+      (lh.visibility ?? 1) + (rh.visibility ?? 1)
+    ) / 4;
+
+    // Body part anchor: per-part position + size hint from pose landmarks
+    const getAnchorPoint = (lm: any[], part: BodyPart, cw: number, ch: number) => {
+      const mx = (x: number) => isMirroredRef.current ? (1 - x) * cw : x * cw;
+      switch (part) {
+        case 'chest':
+          return {
+            x: (mx(lm[11].x) + mx(lm[12].x)) / 2,
+            y: ((lm[11].y + lm[12].y) / 2) * ch + 40,
+            size: Math.abs(mx(lm[12].x) - mx(lm[11].x)) * 0.5,
+          };
+        case 'left_arm':
+          return {
+            x: (mx(lm[13].x) + mx(lm[15].x)) / 2,
+            y: ((lm[13].y + lm[15].y) / 2) * ch,
+            size: 80,
+          };
+        case 'right_arm':
+          return {
+            x: (mx(lm[14].x) + mx(lm[16].x)) / 2,
+            y: ((lm[14].y + lm[16].y) / 2) * ch,
+            size: 80,
+          };
+        case 'left_shoulder':
+          return { x: mx(lm[11].x), y: lm[11].y * ch, size: 90 };
+        case 'right_shoulder':
+          return { x: mx(lm[12].x), y: lm[12].y * ch, size: 90 };
+        case 'neck':
+          return {
+            x: (mx(lm[11].x) + mx(lm[12].x)) / 2,
+            y: ((lm[11].y + lm[12].y) / 2) * ch - 40,
+            size: 70,
+          };
+        default:
+          return {
+            x: (mx(lm[11].x) + mx(lm[12].x)) / 2,
+            y: ((lm[11].y + lm[12].y) / 2) * ch,
+            size: 100,
+          };
+      }
+    };
+
+    const anchor = getAnchorPoint(landmarks2d, bodyPartRef.current, canvas.width, canvas.height);
+
+    // Capture body anchor offset on first confirmed frame
     if (pendingConfirmRef.current) {
       anchorOffsetX.current = manualXRef.current - torsoX;
       anchorOffsetY.current = manualYRef.current - torsoY;
@@ -184,95 +356,178 @@ export default function TryOnWebcamScreen() {
       setAnchorSet(true);
     }
 
+    // Determine tattoo anchor position
+    let x = 0, y = 0;
     if (isConfirmedRef.current && anchorSetRef.current) {
-      // Tattoo follows body using stored offset from torso
       x = torsoX + anchorOffsetX.current;
       y = torsoY + anchorOffsetY.current;
     } else if (manualModeRef.current) {
       x = manualXRef.current;
       y = manualYRef.current;
     } else {
-      x = torsoX;
-      y = torsoY;
+      x = anchor.x;
+      y = anchor.y;
       currentTattooX.current = x;
       currentTattooY.current = y;
     }
 
+    lastTorsoX.current = torsoX;
+    lastTorsoY.current = torsoY;
     lastDrawnX.current = x;
     lastDrawnY.current = y;
 
-    const finalSize = size * userScaleRef.current;
     const img = tattooImageRef.current;
+    if (!img || !img.complete || img.naturalWidth === 0) return;
 
-    if (img && img.complete && img.naturalWidth > 0) {
-      if (isConfirmedRef.current) {
-        // Locked skin blending — tattoo embedded in skin
-        ctx.save();
-        ctx.globalCompositeOperation = 'multiply';
-        ctx.globalAlpha = opacityRef.current;
-        ctx.translate(x, y);
-        ctx.rotate((userRotationRef.current * Math.PI) / 180);
-        ctx.drawImage(img, -finalSize / 2, -finalSize / 2, finalSize, finalSize);
-        ctx.restore();
+    // Size scales with body part hint × user scale × distance from camera
+    const baseSize = anchor.size * userScaleRef.current * clampedDistScale;
+    const visibilityAlpha = opacityRef.current * Math.min(1, avgVisibility * 1.5);
 
-        // Skin texture overlay to look embedded
-        ctx.save();
-        ctx.globalCompositeOperation = 'overlay';
-        ctx.globalAlpha = 0.08;
-        ctx.translate(x, y);
-        ctx.rotate((userRotationRef.current * Math.PI) / 180);
-        ctx.drawImage(
-          results.image,
-          x - finalSize / 2, y - finalSize / 2, finalSize, finalSize,
-          -finalSize / 2, -finalSize / 2, finalSize, finalSize
-        );
-        ctx.restore();
+    // Apply 3D perspective matrix + draw tattoo centered at (px, py)
+    const draw3d = (targetCtx: any, px: number, py: number) => {
+      targetCtx.translate(px, py);
+      targetCtx.rotate((userRotationRef.current * Math.PI) / 180);
+      targetCtx.transform(
+        compressionX, skewFactor,
+        -skewFactor * 0.3, compressionY,
+        0, 0
+      );
+      if (compressionX < 0) targetCtx.scale(-1, 1);
+      targetCtx.drawImage(img, -baseSize / 2, -baseSize / 2, baseSize, baseSize);
+    };
 
-        // Subtle inner shadow for depth
-        ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 0.12;
-        ctx.filter = 'blur(3px)';
-        ctx.translate(x + 1, y + 2);
-        ctx.rotate((userRotationRef.current * Math.PI) / 180);
-        ctx.drawImage(img, -finalSize / 2, -finalSize / 2, finalSize, finalSize);
-        ctx.restore();
-        ctx.filter = 'none';
+    // ── Hand mode: use hand-orientation-aware draw when landmarks are live ──
+    const isHandMode = bodyPartRef.current === 'left_arm' || bodyPartRef.current === 'right_arm';
+    const isRightHand = bodyPartRef.current === 'right_arm';
+    const handLandmarks = isRightHand ? results.rightHandLandmarks : results.leftHandLandmarks;
+
+    if (isHandMode && handLandmarks && !manualModeRef.current && !isConfirmedRef.current) {
+      const handResult = drawTattooOnHand(
+        ctx, handLandmarks, isRightHand,
+        canvas, img, userScaleRef.current,
+        userRotationRef.current, visibilityAlpha,
+        blendModeRef.current, mX
+      );
+      if (showDebugRef.current) {
+        setDebugInfo({
+          rotY: rotationYDeg,
+          distScale: clampedDistScale,
+          visibility: avgVisibility,
+          isPalmFacing: handResult?.isPalmFacing,
+          handAngleDeg: handResult?.handAngleDeg,
+        });
+      }
+      return;
+    }
+
+    // Update debug for non-hand modes
+    if (showDebugRef.current) {
+      setDebugInfo({ rotY: rotationYDeg, distScale: clampedDistScale, visibility: avgVisibility });
+    }
+
+    // ── Body / torso drawing ──
+    if (isConfirmedRef.current) {
+      // Drop shadow
+      ctx.save();
+      ctx.globalAlpha = 0.15;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.filter = 'blur(4px)';
+      draw3d(ctx, x + 2, y + 3);
+      ctx.restore();
+      ctx.filter = 'none';
+
+      // Main ink layer — optionally clipped to body silhouette
+      if (segMask) {
+        if (!offscreenCanvas.current) {
+          offscreenCanvas.current = document.createElement('canvas');
+        }
+        offscreenCanvas.current.width = canvas.width;
+        offscreenCanvas.current.height = canvas.height;
+        const offCtx = offscreenCanvas.current.getContext('2d');
+        if (offCtx) {
+          offCtx.clearRect(0, 0, canvas.width, canvas.height);
+          offCtx.save();
+          offCtx.globalAlpha = visibilityAlpha;
+          draw3d(offCtx, x, y);
+          offCtx.restore();
+
+          offCtx.globalCompositeOperation = 'destination-in';
+          if (isMirroredRef.current) {
+            offCtx.save();
+            offCtx.scale(-1, 1);
+            offCtx.drawImage(segMask, -canvas.width, 0, canvas.width, canvas.height);
+            offCtx.restore();
+          } else {
+            offCtx.drawImage(segMask, 0, 0, canvas.width, canvas.height);
+          }
+          offCtx.globalCompositeOperation = 'source-over';
+
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.drawImage(offscreenCanvas.current, 0, 0);
+          ctx.globalCompositeOperation = 'source-over';
+        }
       } else {
-        // Positioning mode — shadow + blend
         ctx.save();
-        ctx.globalAlpha = 0.15;
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.filter = 'blur(4px)';
-        ctx.translate(x + 2, y + 3);
-        ctx.rotate((userRotationRef.current * Math.PI) / 180);
-        ctx.drawImage(img, -finalSize / 2, -finalSize / 2, finalSize, finalSize);
-        ctx.restore();
-        ctx.filter = 'none';
-
-        ctx.save();
-        ctx.globalAlpha = opacityRef.current;
-        ctx.globalCompositeOperation = blendModeRef.current;
-        ctx.translate(x, y);
-        ctx.rotate((userRotationRef.current * Math.PI) / 180);
-        ctx.drawImage(img, -finalSize / 2, -finalSize / 2, finalSize, finalSize);
+        ctx.globalAlpha = visibilityAlpha;
+        ctx.globalCompositeOperation = 'multiply';
+        draw3d(ctx, x, y);
         ctx.restore();
       }
+
+      // Skin texture overlay for depth
+      ctx.save();
+      ctx.globalCompositeOperation = 'overlay';
+      ctx.globalAlpha = 0.08;
+      ctx.translate(x, y);
+      ctx.rotate((userRotationRef.current * Math.PI) / 180);
+      ctx.transform(compressionX, skewFactor, -skewFactor * 0.3, compressionY, 0, 0);
+      if (compressionX < 0) ctx.scale(-1, 1);
+      ctx.drawImage(
+        results.image,
+        x - baseSize / 2, y - baseSize / 2, baseSize, baseSize,
+        -baseSize / 2, -baseSize / 2, baseSize, baseSize
+      );
+      ctx.restore();
+
+      // Inner shadow
+      ctx.save();
+      ctx.globalAlpha = 0.12;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.filter = 'blur(3px)';
+      draw3d(ctx, x + 1, y + 2);
+      ctx.restore();
+      ctx.filter = 'none';
+
+    } else {
+      // Positioning mode: shadow + blend
+      ctx.save();
+      ctx.globalAlpha = 0.15;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.filter = 'blur(4px)';
+      draw3d(ctx, x + 2, y + 3);
+      ctx.restore();
+      ctx.filter = 'none';
+
+      ctx.save();
+      ctx.globalAlpha = visibilityAlpha;
+      ctx.globalCompositeOperation = blendModeRef.current;
+      draw3d(ctx, x, y);
+      ctx.restore();
     }
   }
 
   function initPose() {
     const win = window as any;
-
     const pose = new win.Pose({
       locateFile: (file: string) =>
         `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
     });
 
     pose.setOptions({
-      modelComplexity: 1,
+      modelComplexity: 2,
       smoothLandmarks: true,
-      enableSegmentation: false,
+      enableSegmentation: true,
+      smoothSegmentation: true,
       minDetectionConfidence: 0.5,
       minTrackingConfidence: 0.5,
     });
@@ -306,15 +561,14 @@ export default function TryOnWebcamScreen() {
   }
 
   function handleMouseDown(e: any) {
-    if (isConfirmedRef.current) return; // locked — no dragging
+    if (isConfirmedRef.current) return;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
     const tx = manualModeRef.current ? manualXRef.current : currentTattooX.current;
     const ty = manualModeRef.current ? manualYRef.current : currentTattooY.current;
-    const dist = Math.sqrt((mouseX - tx) ** 2 + (mouseY - ty) ** 2);
-    if (dist < 100) {
+    if (Math.sqrt((mouseX - tx) ** 2 + (mouseY - ty) ** 2) < 100) {
       isDragging.current = true;
       setManualMode(true);
       dragOffsetX.current = mouseX - tx;
@@ -338,7 +592,7 @@ export default function TryOnWebcamScreen() {
   }
 
   function handleTouchStart(e: any) {
-    if (isConfirmedRef.current) return; // locked — no dragging
+    if (isConfirmedRef.current) return;
     if (e.touches.length === 2) {
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
@@ -414,16 +668,10 @@ export default function TryOnWebcamScreen() {
         autoPlay
         playsInline
         muted
-        style={{
-          position: 'absolute',
-          width: 1,
-          height: 1,
-          opacity: 0,
-          pointerEvents: 'none',
-        } as any}
+        style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' } as any}
       />
 
-      {/* Canvas — mirrored camera feed + tattoo drawn here */}
+      {/* Canvas — camera feed + tattoo drawn here */}
       <canvas
         ref={canvasRef}
         onMouseDown={handleMouseDown}
@@ -445,12 +693,27 @@ export default function TryOnWebcamScreen() {
         } as any}
       />
 
-      {/* Status badge — hidden when confirm popup is showing */}
+      {/* Status badge — hidden while confirm popup is up */}
       {!showConfirm && (
         <View style={styles.statusBadge}>
           <Text style={[styles.statusText, isConfirmed && styles.statusTextConfirmed]}>
             {statusMessage}
           </Text>
+        </View>
+      )}
+
+      {/* 3D / hand debug overlay — top-right corner */}
+      {showDebug && (
+        <View style={styles.debugOverlay}>
+          <Text style={styles.debugText}>Rotation: {Math.round(debugInfo.rotY)}°</Text>
+          <Text style={styles.debugText}>Distance: {debugInfo.distScale.toFixed(2)}x</Text>
+          <Text style={styles.debugText}>Visibility: {Math.round(debugInfo.visibility * 100)}%</Text>
+          {debugInfo.isPalmFacing !== undefined && (
+            <Text style={styles.debugText}>Palm: {debugInfo.isPalmFacing ? 'facing' : 'back'}</Text>
+          )}
+          {debugInfo.handAngleDeg !== undefined && (
+            <Text style={styles.debugText}>Hand: {Math.round(debugInfo.handAngleDeg)}°</Text>
+          )}
         </View>
       )}
 
@@ -490,6 +753,30 @@ export default function TryOnWebcamScreen() {
 
       {/* Controls panel */}
       <View style={[styles.controls, { paddingBottom: insets.bottom + 8 }]}>
+
+        {/* Body part selector */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.bodyPartScroll}
+          contentContainerStyle={styles.bodyPartScrollContent}
+        >
+          {BODY_PARTS.map(({ key, label }) => (
+            <Pressable
+              key={key}
+              onPress={() => { setBodyPart(key); setManualMode(false); }}
+              style={({ pressed }: { pressed: boolean }) => [
+                styles.bodyPartBtn,
+                bodyPart === key && styles.bodyPartBtnActive,
+                { opacity: pressed ? 0.8 : 1 },
+              ]}
+            >
+              <Text style={[styles.bodyPartBtnText, bodyPart === key && styles.bodyPartBtnTextActive]}>
+                {label}
+              </Text>
+            </Pressable>
+          ))}
+        </ScrollView>
 
         {/* Row 1: Scale */}
         <View style={styles.row}>
@@ -536,17 +823,12 @@ export default function TryOnWebcamScreen() {
             max="100"
             value={Math.round(opacity * 100)}
             onChange={(e: any) => setOpacity(parseInt(e.target.value) / 100)}
-            style={{
-              flex: 1,
-              accentColor: '#E24B4A',
-              cursor: 'pointer',
-              margin: '0 8px',
-            } as any}
+            style={{ flex: 1, accentColor: '#E24B4A', cursor: 'pointer', margin: '0 8px' } as any}
           />
           <Text style={styles.readoutFixed}>{Math.round(opacity * 100)}%</Text>
         </View>
 
-        {/* Row 4: Back | Reposition/Reset | Ink Mode | Screenshot */}
+        {/* Row 4: Back | Reposition | Reset | Mirror | 3D | Ink | Screenshot */}
         <View style={styles.row}>
           <Pressable
             onPress={() => router.back()}
@@ -554,6 +836,7 @@ export default function TryOnWebcamScreen() {
           >
             <Text style={styles.rowBtnText}>← Back</Text>
           </Pressable>
+
           {isConfirmed && (
             <Pressable
               onPress={() => {
@@ -566,9 +849,10 @@ export default function TryOnWebcamScreen() {
               }}
               style={({ pressed }: { pressed: boolean }) => [styles.repositionBtn, { opacity: pressed ? 0.7 : 1 }]}
             >
-              <Text style={styles.repositionBtnText}>Reposition ✎</Text>
+              <Text style={styles.repositionBtnText}>✎ Move</Text>
             </Pressable>
           )}
+
           {!isConfirmed && manualMode && (
             <Pressable
               onPress={() => setManualMode(false)}
@@ -577,18 +861,29 @@ export default function TryOnWebcamScreen() {
               <Text style={styles.resetBodyBtnText}>Reset</Text>
             </Pressable>
           )}
+
           <Pressable
             onPress={() => setIsMirrored((m) => !m)}
             style={({ pressed }: { pressed: boolean }) => [
-              styles.mirrorBtn,
-              isMirrored && styles.mirrorBtnActive,
+              styles.iconChip,
+              isMirrored && styles.iconChipBlue,
               { opacity: pressed ? 0.7 : 1 },
             ]}
           >
-            <Text style={[styles.mirrorBtnText, isMirrored && styles.mirrorBtnTextActive]}>
-              ⟳ Mirror
-            </Text>
+            <Text style={[styles.iconChipText, isMirrored && styles.iconChipTextBlue]}>⟳</Text>
           </Pressable>
+
+          <Pressable
+            onPress={() => setShowDebug((d) => !d)}
+            style={({ pressed }: { pressed: boolean }) => [
+              styles.iconChip,
+              showDebug && styles.iconChipGreen,
+              { opacity: pressed ? 0.7 : 1 },
+            ]}
+          >
+            <Text style={[styles.iconChipText, showDebug && styles.iconChipTextGreen]}>3D</Text>
+          </Pressable>
+
           <Pressable
             onPress={() => setBlendMode((b) => b === 'multiply' ? 'source-over' : 'multiply')}
             style={({ pressed }: { pressed: boolean }) => [
@@ -601,13 +896,15 @@ export default function TryOnWebcamScreen() {
               {blendMode === 'multiply' ? 'Ink' : 'Float'}
             </Text>
           </Pressable>
+
           <Pressable
             onPress={handleScreenshot}
             style={({ pressed }: { pressed: boolean }) => [styles.screenshotBtn, { opacity: pressed ? 0.7 : 1 }]}
           >
-            <Text style={styles.screenshotBtnText}>📸 Screenshot</Text>
+            <Text style={styles.screenshotBtnText}>📸 Save</Text>
           </Pressable>
         </View>
+
       </View>
     </View>
   );
@@ -647,6 +944,24 @@ const styles = StyleSheet.create({
   statusTextConfirmed: {
     backgroundColor: 'rgba(40,140,60,0.85)',
   },
+  debugOverlay: {
+    position: 'absolute',
+    top: 48,
+    right: 12,
+    backgroundColor: 'rgba(0,0,0,0.78)',
+    borderRadius: 8,
+    padding: 8,
+    gap: 3,
+    zIndex: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(0,220,100,0.35)',
+  },
+  debugText: {
+    color: '#00dc64',
+    fontSize: 11,
+    fontFamily: 'monospace',
+    fontWeight: '700',
+  },
   confirmOverlay: {
     position: 'absolute',
     top: 0,
@@ -664,18 +979,18 @@ const styles = StyleSheet.create({
     padding: 24,
     marginHorizontal: 32,
     borderWidth: 1,
-    borderColor: '#E24B4A',
+    borderColor: AppTheme.accent,
     gap: 12,
   },
   confirmTitle: {
-    color: '#F1EFE8',
+    color: AppTheme.text,
     fontSize: 20,
     fontFamily: 'Georgia',
     textAlign: 'center',
     fontWeight: '700',
   },
   confirmSub: {
-    color: '#888780',
+    color: AppTheme.muted,
     fontSize: 13,
     fontFamily: Fonts?.sans ?? 'system-ui',
     textAlign: 'center',
@@ -684,7 +999,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   confirmYes: {
-    backgroundColor: '#E24B4A',
+    backgroundColor: AppTheme.accent,
     padding: 14,
     borderRadius: 10,
     alignItems: 'center',
@@ -697,13 +1012,13 @@ const styles = StyleSheet.create({
   },
   confirmNo: {
     borderWidth: 1,
-    borderColor: '#2C2C2A',
+    borderColor: AppTheme.border,
     padding: 12,
     borderRadius: 10,
     alignItems: 'center',
   },
   confirmNoText: {
-    color: '#888780',
+    color: AppTheme.muted,
     fontSize: 14,
     fontFamily: Fonts?.sans ?? 'system-ui',
   },
@@ -717,13 +1032,42 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: AppTheme.border,
     paddingHorizontal: 16,
-    paddingTop: 12,
-    gap: 10,
+    paddingTop: 10,
+    gap: 8,
+  },
+  bodyPartScroll: {
+    flexGrow: 0,
+  },
+  bodyPartScrollContent: {
+    gap: 6,
+    paddingBottom: 2,
+  },
+  bodyPartBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: AppTheme.border,
+    backgroundColor: AppTheme.bg,
+  },
+  bodyPartBtnActive: {
+    backgroundColor: AppTheme.accent,
+    borderColor: AppTheme.accent,
+  },
+  bodyPartBtnText: {
+    color: AppTheme.muted,
+    fontSize: 13,
+    fontFamily: Fonts?.sans ?? 'system-ui',
+    fontWeight: '600',
+  },
+  bodyPartBtnTextActive: {
+    color: '#fff',
+    fontWeight: '700',
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   sliderRow: {
     flexDirection: 'row',
@@ -807,7 +1151,7 @@ const styles = StyleSheet.create({
     fontFamily: Fonts?.sans ?? 'system-ui',
     fontWeight: '600',
   },
-  mirrorBtn: {
+  iconChip: {
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: 10,
@@ -816,18 +1160,25 @@ const styles = StyleSheet.create({
     borderColor: AppTheme.border,
     backgroundColor: AppTheme.bg,
   },
-  mirrorBtnActive: {
+  iconChipText: {
+    color: AppTheme.muted,
+    fontSize: 13,
+    fontFamily: Fonts?.sans ?? 'system-ui',
+    fontWeight: '700' as const,
+  },
+  iconChipBlue: {
     backgroundColor: 'rgba(100,180,255,0.12)',
     borderColor: '#4aabE2',
   },
-  mirrorBtnText: {
-    color: AppTheme.muted,
-    fontSize: 12,
-    fontFamily: Fonts?.sans ?? 'system-ui',
-    fontWeight: '600' as const,
-  },
-  mirrorBtnTextActive: {
+  iconChipTextBlue: {
     color: '#4aabE2',
+  },
+  iconChipGreen: {
+    backgroundColor: 'rgba(0,220,100,0.12)',
+    borderColor: '#00dc64',
+  },
+  iconChipTextGreen: {
+    color: '#00dc64',
   },
   inkModeBtn: {
     paddingHorizontal: 12,
