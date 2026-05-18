@@ -43,3 +43,8 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Python bg_server
+bg_server/__pycache__/
+bg_server/.venv/
+*.pyc

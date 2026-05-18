@@ -1,9 +1,10 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Dimensions,
   Image,
   PanResponder,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -13,36 +14,47 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 
 import { AppTheme, Fonts } from '@/constants/theme';
-import { supabase } from '@/lib/supabase';
-import { DbTattoo } from '@/lib/types';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-const CONTROLS_HEIGHT = 160;
+const WEBVIEW_HEIGHT = SCREEN_HEIGHT * 0.7;
+const CONTROLS_HEIGHT = SCREEN_HEIGHT * 0.3;
 
 const SKETCHFAB_URL =
   'https://sketchfab.com/models/59bb70402302466281bceca28add8ecf/embed?autostart=1&ui_controls=0&ui_infos=0&ui_watermark=0&ui_stop=0&ui_inspector=0&ui_annotations=0&ui_settings=0&ui_vr=0&ui_help=0';
 
-export default function TryOnScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+const TATTOO_BASE_SIZE = 120;
+const TATTOO_START_TOP = WEBVIEW_HEIGHT * 0.3;
+
+function StatueViewer({ height }: { height: number }) {
+  if (Platform.OS === 'web') {
+    return (
+      <iframe
+        src={SKETCHFAB_URL}
+        style={{ width: '100%', height, border: 'none', display: 'block' }}
+        allow="autoplay; fullscreen; xr-spatial-tracking"
+        allowFullScreen
+      />
+    );
+  }
+  return (
+    <WebView
+      source={{ uri: SKETCHFAB_URL }}
+      style={{ flex: 1 }}
+      allowsInlineMediaPlayback
+      mediaPlaybackRequiresUserAction={false}
+    />
+  );
+}
+
+export default function TryOnStatueScreen() {
   const insets = useSafeAreaInsets();
-  const [tattoo, setTattoo] = useState<DbTattoo | null>(null);
+  const { tattooBase64 } = useLocalSearchParams<{ tattooBase64: string }>();
+
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [scale, setScale] = useState(1);
   const [rotation, setRotation] = useState(0);
 
   const basePos = useRef({ x: 0, y: 0 });
-
-  useEffect(() => {
-    if (!id) return;
-    supabase
-      .from('tattoos')
-      .select('*')
-      .eq('id', id)
-      .single()
-      .then(({ data }) => {
-        if (data) setTattoo(data as DbTattoo);
-      });
-  }, [id]);
 
   const panResponder = useRef(
     PanResponder.create({
@@ -69,22 +81,19 @@ export default function TryOnScreen() {
     basePos.current = { x: 0, y: 0 };
   }
 
-  const tattooSize = 120 * scale;
+  const tattooSize = TATTOO_BASE_SIZE * scale;
   const tattooLeft = SCREEN_WIDTH / 2 + position.x - tattooSize / 2;
-  const tattooTop = (SCREEN_HEIGHT - CONTROLS_HEIGHT) / 2 + position.y - tattooSize / 2;
+  const tattooTop = TATTOO_START_TOP + position.y - tattooSize / 2;
 
   return (
     <View style={styles.container}>
-      {/* LAYER 1: Sketchfab 3D model */}
-      <WebView
-        source={{ uri: SKETCHFAB_URL }}
-        style={styles.webview}
-        allowsInlineMediaPlayback
-        mediaPlaybackRequiresUserAction={false}
-      />
+      {/* LAYER 1: Sketchfab 3D statue */}
+      <View style={styles.webview}>
+        <StatueViewer height={WEBVIEW_HEIGHT} />
+      </View>
 
-      {/* LAYER 2: Tattoo overlay */}
-      {tattoo?.image_url ? (
+      {/* LAYER 2: Cleaned tattoo overlay */}
+      {tattooBase64 ? (
         <View
           {...panResponder.panHandlers}
           style={[
@@ -99,16 +108,16 @@ export default function TryOnScreen() {
           ]}
         >
           <Image
-            source={{ uri: tattoo.image_url }}
+            source={{ uri: tattooBase64 }}
             style={styles.tattooImage}
             resizeMode="contain"
           />
         </View>
       ) : null}
 
-      {/* LAYER 3: Controls */}
+      {/* LAYER 3: Controls panel */}
       <View style={[styles.controls, { paddingBottom: insets.bottom + 8 }]}>
-        {/* Row 1: Back / Reset / Save */}
+        {/* Row 1: Back / Reset / Save Result */}
         <View style={styles.row}>
           <Pressable
             onPress={() => router.back()}
@@ -125,14 +134,14 @@ export default function TryOnScreen() {
           <Pressable
             style={({ pressed }: { pressed: boolean }) => [styles.rowBtn, { opacity: pressed ? 0.7 : 1 }]}
           >
-            <Text style={styles.rowBtnText}>Save</Text>
+            <Text style={styles.rowBtnText}>Save Result</Text>
           </Pressable>
         </View>
 
         {/* Row 2: Scale */}
         <View style={styles.row}>
           <Pressable
-            onPress={() => setScale((s) => Math.max(0.1, parseFloat((s - 0.1).toFixed(1))))}
+            onPress={() => setScale((s) => Math.max(0.3, parseFloat((s - 0.1).toFixed(1))))}
             style={({ pressed }: { pressed: boolean }) => [styles.iconBtn, { opacity: pressed ? 0.7 : 1 }]}
           >
             <Text style={styles.iconBtnText}>−</Text>
@@ -170,14 +179,14 @@ export default function TryOnScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: AppTheme.bg,
+    backgroundColor: '#0a0908',
   },
   webview: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
-    bottom: CONTROLS_HEIGHT,
+    height: WEBVIEW_HEIGHT,
   },
   tattooWrapper: {
     position: 'absolute',
@@ -197,8 +206,9 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: AppTheme.border,
     paddingHorizontal: 16,
-    paddingTop: 12,
-    gap: 8,
+    paddingTop: 16,
+    gap: 12,
+    justifyContent: 'flex-start',
   },
   row: {
     flexDirection: 'row',
@@ -208,7 +218,7 @@ const styles = StyleSheet.create({
   rowBtn: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 4,
+    paddingVertical: 6,
   },
   rowBtnText: {
     color: AppTheme.text,

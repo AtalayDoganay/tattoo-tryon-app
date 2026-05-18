@@ -66,6 +66,9 @@ export default function RootLayout() {
         <Stack.Screen name="gallery" />
         <Stack.Screen name="tattoo/[id]" />
         <Stack.Screen name="tryon/[id]" />
+        <Stack.Screen name="removebg" />
+        <Stack.Screen name="tryon-statue" />
+        <Stack.Screen name="tryon-webcam" />
         <Stack.Screen name="manager" />
 
         {/* If you still have modal */}
