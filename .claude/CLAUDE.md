@@ -97,3 +97,44 @@ See .claude/commands/ for task-specific guides:
 - ar-debug.md — MediaPipe/canvas debugging guide
 - supabase.md — RLS policies, storage, auth patterns
 - artist-onboard.md — onboarding flow for new artists
+
+## ECC (Enhanced Claude Code) — installed system
+ECC (full profile, v2.0.0-rc.1) is installed into this project's .claude/.
+Source: https://github.com/affaan-m/ecc
+The five project skills above (frontend-ui-engineering, etc.) and the five
+project commands (deploy, newfeature, etc.) remain the SOURCE OF TRUTH for
+TattooAR-specific work — prefer them. ECC adds a general engineering layer
+underneath. Run /ecc-guide for the live index.
+
+### What ECC adds (all namespaced — project files untouched)
+- skills/ecc/ — ~195 reusable skill packs (React, TypeScript, database,
+  security, testing, docs, orchestration, etc.)
+- agents/ — 63 specialized subagents (code-reviewer, react-reviewer,
+  python-reviewer, architect, security-reviewer, refactor-cleaner, …)
+- commands/ — ECC slash commands (alongside our 5 project commands)
+- rules/ecc/ — language rule sets; relevant here: typescript, react, python,
+  common, web
+- ecc/install-state.json — install manifest (do not hand-edit)
+
+### Instincts (continuous learning v2)
+skills/ecc/continuous-learning-v2/ captures non-trivial patterns discovered
+during sessions and scores them by confidence.
+- /instinct-status — view learned instincts (project + global)
+- /learn — extract reusable patterns from the current session
+- /evolve — cluster instincts into candidate skills
+- /instinct-import, /instinct-export — share instincts across projects
+
+### Memory persistence
+hooks/memory-persistence/ + hooks/hooks.json persist session learnings
+(SessionStart loads prior context, Stop/PreCompact save state).
+- /save-session, /resume-session, /sessions — manage session memory
+NOTE: hooks/hooks.json is plugin-style. If the lifecycle hooks don't fire
+automatically, wire them via .claude/settings.json (or install ECC as a
+plugin) — the skills/commands above work regardless.
+
+### Useful ECC commands for this stack
+- /react-review, /react-build, /react-test — React/TSX work
+- /python-review — bg_server/ Flask code
+- /security-scan, /quality-gate — pre-deploy checks
+- /code-review, /review-pr — diff & PR review
+- /plan, /feature-dev — planning new features (pairs with newfeature.md)
