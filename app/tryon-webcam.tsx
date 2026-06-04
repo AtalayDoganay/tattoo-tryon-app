@@ -101,21 +101,23 @@ function drawTattooOnHand(
     targetCtx.drawImage(img, -baseSize / 2, -baseSize / 2, baseSize, baseSize);
   };
 
-  // Shadow pass
+  // Blurred shadow pass underneath — grounds the ink on the skin
   ctx.save();
-  ctx.globalAlpha = 0.15;
+  ctx.globalAlpha = 0.2;
   ctx.globalCompositeOperation = 'source-over';
-  ctx.filter = 'blur(4px)';
-  applyHandTransform(ctx, 2, 3);
+  ctx.filter = 'blur(3px)';
+  applyHandTransform(ctx, 1, 1);
   ctx.restore();
   ctx.filter = 'none';
 
-  // Main tattoo pass
+  // Main tattoo pass — multiply + slight sepia/darken so it reads as real ink on skin
   ctx.save();
-  ctx.globalAlpha = opacity;
-  ctx.globalCompositeOperation = blendMode;
+  ctx.globalAlpha = opacity * 0.85;
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.filter = 'sepia(0.35) brightness(0.9)';
   applyHandTransform(ctx);
   ctx.restore();
+  ctx.filter = 'none';
 
   return { isPalmFacing, handAngleDeg };
 }
@@ -124,7 +126,7 @@ export default function TryOnWebcamScreen() {
   const insets = useSafeAreaInsets();
   const { tattooBase64 } = useLocalSearchParams<{ tattooBase64: string }>();
 
-  const [userScale, setUserScale] = useState(1.0);
+  const [userScale, setUserScale] = useState(2.5);
   const [userRotation, setUserRotation] = useState(0);
   const [opacity, setOpacity] = useState(1.0);
   const [blendMode, setBlendMode] = useState<'multiply' | 'source-over'>('multiply');
@@ -136,7 +138,7 @@ export default function TryOnWebcamScreen() {
   const [isConfirmed, setIsConfirmed] = useState(false);
   const [anchorSet, setAnchorSet] = useState(false);
   const [isMirrored, setIsMirrored] = useState(true);
-  const [showDebug, setShowDebug] = useState(true);
+  const [showDebug, setShowDebug] = useState(false);
   const [debugInfo, setDebugInfo] = useState<DebugInfo>({ rotY: 0, distScale: 1, visibility: 0 });
   const [bodyPart, setBodyPart] = useState<BodyPart>('chest');
 
@@ -146,7 +148,7 @@ export default function TryOnWebcamScreen() {
   const offscreenCanvas = useRef<any>(null);
 
   // Stale-closure refs — every state var used in onResults needs a paired ref
-  const userScaleRef = useRef(1.0);
+  const userScaleRef = useRef(2.5);
   const userRotationRef = useRef(0);
   const opacityRef = useRef(1.0);
   const blendModeRef = useRef<'multiply' | 'source-over'>('multiply');
@@ -161,7 +163,7 @@ export default function TryOnWebcamScreen() {
   const lastDrawnX = useRef(0);
   const lastDrawnY = useRef(0);
   const isMirroredRef = useRef(true);
-  const showDebugRef = useRef(true);
+  const showDebugRef = useRef(false);
   const bodyPartRef = useRef<BodyPart>('chest');
   const lastTorsoX = useRef(0);
   const lastTorsoY = useRef(0);
