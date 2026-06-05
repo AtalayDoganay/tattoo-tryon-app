@@ -441,6 +441,9 @@ export default function TryOnWebcamScreen() {
 
   function handleMouseMove(e: any) {
     if (!isDragging.current) return;
+    // If the button was released off-canvas (e.g. over the preview box) we never
+    // saw the mouseup — end the drag silently so the tattoo stops chasing the cursor.
+    if (e.buttons === 0) { isDragging.current = false; return; }
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     setManualX(e.clientX - rect.left - dragOffsetX.current);
@@ -556,8 +559,9 @@ export default function TryOnWebcamScreen() {
         } as any}
       />
 
-      {/* Status badge — hidden while confirm popup is up */}
-      {!showConfirm && (
+      {/* Status badge — hidden during confirm and pre-placement (the preview box
+          guides that step); still surfaces Loading / No body detected feedback */}
+      {!showConfirm && (hasPlaced || status !== 'ready') && (
         <View style={styles.statusBadge}>
           <Text style={[styles.statusText, isConfirmed && styles.statusTextConfirmed]}>
             {statusMessage}
@@ -565,11 +569,67 @@ export default function TryOnWebcamScreen() {
         </View>
       )}
 
-      {/* Placement hint — shown until the tattoo is first placed */}
-      {!hasPlaced && !showConfirm && !isDragging.current && (
-        <View style={styles.placementHint}>
-          <Text style={styles.placementHintText}>👆 Drag to place your tattoo</Text>
-        </View>
+      {/* Tattoo preview box — drag source. Disappears once the tattoo is placed. */}
+      {!hasPlaced && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 20,
+            left: 20,
+            width: 100,
+            height: 100,
+            border: '2px solid #E24B4A',
+            borderRadius: 12,
+            backgroundColor: 'rgba(0,0,0,0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'grab',
+            zIndex: 10,
+            padding: 8,
+          } as any}
+          onMouseDown={(e: any) => {
+            // Begin dragging the tattoo out of the box, centered on the cursor
+            setManualX(70);
+            setManualY(70);
+            showTattooRef.current = true;
+            isDragging.current = true;
+            dragOffsetX.current = 0;
+            dragOffsetY.current = 0;
+            e.preventDefault();
+          }}
+        >
+          <img
+            src={tattooBase64}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'contain',
+              pointerEvents: 'none',
+            } as any}
+          />
+        </div>
+      )}
+
+      {/* Hint under the preview box */}
+      {!hasPlaced && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 130,
+            left: 10,
+            color: 'white',
+            fontSize: 11,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            padding: '4px 8px',
+            borderRadius: 8,
+            zIndex: 10,
+            textAlign: 'center',
+            width: 110,
+          } as any}
+        >
+          Drag to your body
+        </div>
       )}
 
       {/* Confirmation popup overlay */}
@@ -732,25 +792,6 @@ const styles = StyleSheet.create({
   },
   statusTextConfirmed: {
     backgroundColor: 'rgba(40,140,60,0.85)',
-  },
-  placementHint: {
-    position: 'absolute',
-    top: '40%',
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-    zIndex: 5,
-  },
-  placementHintText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '700',
-    fontFamily: Fonts?.sans ?? 'system-ui',
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 20,
-    overflow: 'hidden',
   },
   confirmOverlay: {
     position: 'absolute',
