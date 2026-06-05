@@ -134,6 +134,39 @@ export default function TryOnWebcamScreen() {
     return () => { cancelled = true; };
   }, []);
 
+  // Window-level mouse drag — the preview box and canvas are siblings, so once the
+  // cursor leaves the box mid-drag the canvas never sees the move. Listening on
+  // window catches move/up anywhere. Refs update synchronously so onResults (which
+  // reads them each frame) tracks the cursor without waiting on async React state.
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    function onWindowMouseMove(e: MouseEvent) {
+      if (!isDragging.current) return;
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const x = e.clientX - rect.left - dragOffsetX.current;
+      const y = e.clientY - rect.top - dragOffsetY.current;
+      setManualX(x);
+      setManualY(y);
+      manualXRef.current = x;
+      manualYRef.current = y;
+    }
+
+    function onWindowMouseUp() {
+      if (isDragging.current && showTattooRef.current) {
+        isDragging.current = false;
+        setShowConfirm(true);
+      }
+    }
+
+    window.addEventListener('mousemove', onWindowMouseMove);
+    window.addEventListener('mouseup', onWindowMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onWindowMouseMove);
+      window.removeEventListener('mouseup', onWindowMouseUp);
+    };
+  }, []);
+
   function onResults(results: any) {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -439,17 +472,6 @@ export default function TryOnWebcamScreen() {
     }
   }
 
-  function handleMouseMove(e: any) {
-    if (!isDragging.current) return;
-    // If the button was released off-canvas (e.g. over the preview box) we never
-    // saw the mouseup — end the drag silently so the tattoo stops chasing the cursor.
-    if (e.buttons === 0) { isDragging.current = false; return; }
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    setManualX(e.clientX - rect.left - dragOffsetX.current);
-    setManualY(e.clientY - rect.top - dragOffsetY.current);
-  }
-
   function handleWheel(e: any) {
     e.preventDefault();
     const delta = e.deltaY > 0 ? -0.1 : 0.1;
@@ -486,8 +508,12 @@ export default function TryOnWebcamScreen() {
     } else if (e.touches.length === 1 && isDragging.current) {
       const rect = canvasRef.current?.getBoundingClientRect();
       if (!rect) return;
-      setManualX(e.touches[0].clientX - rect.left - dragOffsetX.current);
-      setManualY(e.touches[0].clientY - rect.top - dragOffsetY.current);
+      const x = e.touches[0].clientX - rect.left - dragOffsetX.current;
+      const y = e.touches[0].clientY - rect.top - dragOffsetY.current;
+      setManualX(x);
+      setManualY(y);
+      manualXRef.current = x;
+      manualYRef.current = y;
     }
   }
 
@@ -541,9 +567,6 @@ export default function TryOnWebcamScreen() {
       <canvas
         ref={canvasRef}
         onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleDragEnd}
-        onMouseLeave={handleDragEnd}
         onWheel={handleWheel}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
@@ -589,14 +612,22 @@ export default function TryOnWebcamScreen() {
             padding: 8,
           } as any}
           onMouseDown={(e: any) => {
-            // Begin dragging the tattoo out of the box, centered on the cursor
-            setManualX(70);
-            setManualY(70);
+            // Grab the tattoo out of the box at the cursor; window listeners drive
+            // the rest of the drag. Sync refs now so onResults tracks immediately.
+            const rect = canvasRef.current?.getBoundingClientRect();
+            if (!rect) return;
             showTattooRef.current = true;
             isDragging.current = true;
+            const startX = e.clientX - rect.left;
+            const startY = e.clientY - rect.top;
+            setManualX(startX);
+            setManualY(startY);
+            manualXRef.current = startX;
+            manualYRef.current = startY;
             dragOffsetX.current = 0;
             dragOffsetY.current = 0;
             e.preventDefault();
+            e.stopPropagation();
           }}
         >
           <img
@@ -739,6 +770,8 @@ export default function TryOnWebcamScreen() {
                 anchorOffsetY.current = 0;
                 setManualX(lastDrawnX.current);
                 setManualY(lastDrawnY.current);
+                manualXRef.current = lastDrawnX.current;
+                manualYRef.current = lastDrawnY.current;
               }}
               style={({ pressed }: { pressed: boolean }) => [styles.repositionBtn, { opacity: pressed ? 0.7 : 1 }]}
             >
