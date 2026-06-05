@@ -183,6 +183,7 @@ export default function TryOnWebcamScreen() {
     let compressionX = 1; // 1=facing camera, 0=fully sideways
     let compressionY = 1; // 1=upright, <1=leaning
     let skewFactor = 0;   // perspective slant left/right
+    let rotationY = 0;    // body yaw in radians; 0 = facing camera
     const distanceScale = screenShoulderWidth / BASE_SHOULDER_WIDTH;
     const clampedDistScale = Math.max(0.3, Math.min(3.0, distanceScale));
 
@@ -194,7 +195,7 @@ export default function TryOnWebcamScreen() {
 
       const shoulderDX = rs3d.x - ls3d.x;
       const shoulderDZ = rs3d.z - ls3d.z;
-      const rotationY = Math.atan2(shoulderDZ, shoulderDX);
+      rotationY = Math.atan2(shoulderDZ, shoulderDX);
 
       const shoulderMidZ = (ls3d.z + rs3d.z) / 2;
       const hipMidZ = (lh3d.z + rh3d.z) / 2;
@@ -247,7 +248,22 @@ export default function TryOnWebcamScreen() {
 
     // Size scales with a fixed base × user scale × distance from camera
     const baseSize = 100 * userScaleRef.current * clampedDistScale;
-    const visibilityAlpha = opacityRef.current * Math.min(1, avgVisibility * 1.5);
+
+    // Fade as the body leaves the frame: 0 below 0.2 visibility, full at 0.5+
+    const visibilityFade = Math.min(1, Math.max(0, (avgVisibility - 0.2) / 0.3));
+    const visibilityAlpha = opacityRef.current * visibilityFade;
+
+    // Fade as the person turns away: full until 60°, gone by 90° (sideways).
+    // Past 90° compressionX flips negative, so fading out first hides that flip.
+    const absRotation = Math.abs(rotationY);
+    const rotationFade = absRotation > Math.PI / 3
+      ? Math.max(0, 1 - (absRotation - Math.PI / 3) / (Math.PI / 6))
+      : 1.0;
+    const finalAlpha = visibilityAlpha * rotationFade;
+
+    // Fully faded (turned around / out of frame) — skip every tattoo layer so
+    // no ink or shadow ghost lingers over the camera feed.
+    if (finalAlpha <= 0.01) return;
 
     // Apply 3D perspective matrix + draw tattoo centered at (px, py)
     const draw3d = (targetCtx: any, px: number, py: number) => {
@@ -266,7 +282,7 @@ export default function TryOnWebcamScreen() {
     if (isConfirmedRef.current) {
       // Drop shadow
       ctx.save();
-      ctx.globalAlpha = 0.15;
+      ctx.globalAlpha = 0.15 * finalAlpha;
       ctx.globalCompositeOperation = 'source-over';
       ctx.filter = 'blur(4px)';
       draw3d(ctx, x + 2, y + 3);
@@ -284,7 +300,7 @@ export default function TryOnWebcamScreen() {
         if (offCtx) {
           offCtx.clearRect(0, 0, canvas.width, canvas.height);
           offCtx.save();
-          offCtx.globalAlpha = visibilityAlpha;
+          offCtx.globalAlpha = finalAlpha;
           draw3d(offCtx, x, y);
           offCtx.restore();
 
@@ -305,7 +321,7 @@ export default function TryOnWebcamScreen() {
         }
       } else {
         ctx.save();
-        ctx.globalAlpha = visibilityAlpha;
+        ctx.globalAlpha = finalAlpha;
         ctx.globalCompositeOperation = 'multiply';
         draw3d(ctx, x, y);
         ctx.restore();
@@ -315,7 +331,7 @@ export default function TryOnWebcamScreen() {
       // blends it back over the ink so it reads as embedded in the skin
       ctx.save();
       ctx.globalCompositeOperation = 'overlay';
-      ctx.globalAlpha = 0.06;
+      ctx.globalAlpha = 0.06 * finalAlpha;
       ctx.translate(x, y);
       ctx.rotate((userRotationRef.current * Math.PI) / 180);
       ctx.transform(compressionX, skewFactor, -skewFactor * 0.3, compressionY, 0, 0);
@@ -329,7 +345,7 @@ export default function TryOnWebcamScreen() {
 
       // Inner shadow
       ctx.save();
-      ctx.globalAlpha = 0.12;
+      ctx.globalAlpha = 0.12 * finalAlpha;
       ctx.globalCompositeOperation = 'source-over';
       ctx.filter = 'blur(3px)';
       draw3d(ctx, x + 1, y + 2);
@@ -339,7 +355,7 @@ export default function TryOnWebcamScreen() {
     } else {
       // Positioning mode: shadow + ink
       ctx.save();
-      ctx.globalAlpha = 0.15;
+      ctx.globalAlpha = 0.15 * finalAlpha;
       ctx.globalCompositeOperation = 'source-over';
       ctx.filter = 'blur(4px)';
       draw3d(ctx, x + 2, y + 3);
@@ -347,7 +363,7 @@ export default function TryOnWebcamScreen() {
       ctx.filter = 'none';
 
       ctx.save();
-      ctx.globalAlpha = visibilityAlpha;
+      ctx.globalAlpha = finalAlpha;
       ctx.globalCompositeOperation = 'multiply';
       draw3d(ctx, x, y);
       ctx.restore();
