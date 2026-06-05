@@ -63,6 +63,7 @@ export default function TryOnWebcamScreen() {
   const [isConfirmed, setIsConfirmed] = useState(false);
   const [anchorSet, setAnchorSet] = useState(false);
   const [isMirrored, setIsMirrored] = useState(true);
+  const [hasPlaced, setHasPlaced] = useState(false);
 
   const videoRef = useRef<any>(null);
   const canvasRef = useRef<any>(null);
@@ -84,6 +85,8 @@ export default function TryOnWebcamScreen() {
   const lastDrawnX = useRef(0);
   const lastDrawnY = useRef(0);
   const isMirroredRef = useRef(true);
+  const hasPlacedRef = useRef(false);
+  const showConfirmRef = useRef(false);
 
   // Drag state refs
   const isDragging = useRef(false);
@@ -99,6 +102,8 @@ export default function TryOnWebcamScreen() {
   useEffect(() => { isConfirmedRef.current = isConfirmed; }, [isConfirmed]);
   useEffect(() => { anchorSetRef.current = anchorSet; }, [anchorSet]);
   useEffect(() => { isMirroredRef.current = isMirrored; }, [isMirrored]);
+  useEffect(() => { hasPlacedRef.current = hasPlaced; }, [hasPlaced]);
+  useEffect(() => { showConfirmRef.current = showConfirm; }, [showConfirm]);
 
   useEffect(() => {
     if (!tattooBase64 || typeof window === 'undefined') return;
@@ -154,6 +159,13 @@ export default function TryOnWebcamScreen() {
 
     if (!results.poseLandmarks) { setStatus('no_body'); return; }
     setStatus('ready');
+
+    // Keep the tattoo hidden until the user has dragged it somewhere and
+    // confirmed. While actively dragging (so they can aim it) or while the
+    // confirm dialog is open (so they can see what they're confirming), draw it.
+    if (!hasPlacedRef.current && !isDragging.current && !showConfirmRef.current) {
+      return;
+    }
 
     // Mirror-aware X converter
     const mX = (lx: number) => isMirroredRef.current
@@ -554,6 +566,13 @@ export default function TryOnWebcamScreen() {
         </View>
       )}
 
+      {/* Placement hint — shown until the tattoo is first placed */}
+      {!hasPlaced && !showConfirm && (
+        <View style={styles.placementHint}>
+          <Text style={styles.placementHintText}>👆 Drag to place your tattoo</Text>
+        </View>
+      )}
+
       {/* Confirmation popup overlay */}
       {showConfirm && (
         <View style={styles.confirmOverlay}>
@@ -563,6 +582,7 @@ export default function TryOnWebcamScreen() {
             <View style={styles.confirmButtons}>
               <Pressable
                 onPress={() => {
+                  setHasPlaced(true);
                   setIsConfirmed(true);
                   setShowConfirm(false);
                   pendingConfirmRef.current = true;
@@ -712,6 +732,25 @@ const styles = StyleSheet.create({
   },
   statusTextConfirmed: {
     backgroundColor: 'rgba(40,140,60,0.85)',
+  },
+  placementHint: {
+    position: 'absolute',
+    top: '40%',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 5,
+  },
+  placementHintText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700',
+    fontFamily: Fonts?.sans ?? 'system-ui',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    overflow: 'hidden',
   },
   confirmOverlay: {
     position: 'absolute',
