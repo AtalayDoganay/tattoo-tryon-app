@@ -53,7 +53,7 @@ export default function TryOnWebcamScreen() {
   const insets = useSafeAreaInsets();
   const { tattooBase64 } = useLocalSearchParams<{ tattooBase64: string }>();
 
-  const [userScale, setUserScale] = useState(2.5);
+  const [userScale, setUserScale] = useState(1.0);
   const [userRotation, setUserRotation] = useState(0);
   const [opacity, setOpacity] = useState(1.0);
   const [status, setStatus] = useState<'loading' | 'ready' | 'no_body'>('loading');
@@ -71,7 +71,7 @@ export default function TryOnWebcamScreen() {
   const offscreenCanvas = useRef<any>(null);
 
   // Stale-closure refs — every state var used in onResults needs a paired ref
-  const userScaleRef = useRef(2.5);
+  const userScaleRef = useRef(1.0);
   const userRotationRef = useRef(0);
   const opacityRef = useRef(1.0);
   const manualXRef = useRef(Dimensions.get('window').width / 2);
@@ -85,8 +85,7 @@ export default function TryOnWebcamScreen() {
   const lastDrawnX = useRef(0);
   const lastDrawnY = useRef(0);
   const isMirroredRef = useRef(true);
-  const hasPlacedRef = useRef(false);
-  const showConfirmRef = useRef(false);
+  const showTattooRef = useRef(false); // becomes true on first drag / confirm — gates drawing
 
   // Drag state refs
   const isDragging = useRef(false);
@@ -102,8 +101,6 @@ export default function TryOnWebcamScreen() {
   useEffect(() => { isConfirmedRef.current = isConfirmed; }, [isConfirmed]);
   useEffect(() => { anchorSetRef.current = anchorSet; }, [anchorSet]);
   useEffect(() => { isMirroredRef.current = isMirrored; }, [isMirrored]);
-  useEffect(() => { hasPlacedRef.current = hasPlaced; }, [hasPlaced]);
-  useEffect(() => { showConfirmRef.current = showConfirm; }, [showConfirm]);
 
   useEffect(() => {
     if (!tattooBase64 || typeof window === 'undefined') return;
@@ -160,12 +157,10 @@ export default function TryOnWebcamScreen() {
     if (!results.poseLandmarks) { setStatus('no_body'); return; }
     setStatus('ready');
 
-    // Keep the tattoo hidden until the user has dragged it somewhere and
-    // confirmed. While actively dragging (so they can aim it) or while the
-    // confirm dialog is open (so they can see what they're confirming), draw it.
-    if (!hasPlacedRef.current && !isDragging.current && !showConfirmRef.current) {
-      return;
-    }
+    // Keep the tattoo hidden until the user first interacts with it. showTattooRef
+    // is flipped on in the drag handlers / on confirm and read here on the animation
+    // loop — one ref both sides share, so the loop always sees the latest value.
+    if (!showTattooRef.current) return;
 
     // Mirror-aware X converter
     const mX = (lx: number) => isMirroredRef.current
@@ -428,6 +423,8 @@ export default function TryOnWebcamScreen() {
 
   function handleMouseDown(e: any) {
     if (isConfirmedRef.current) return;
+    // Reveal the centered tattoo on first interaction so the user can see and grab it
+    showTattooRef.current = true;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const mouseX = e.clientX - rect.left;
@@ -458,6 +455,8 @@ export default function TryOnWebcamScreen() {
 
   function handleTouchStart(e: any) {
     if (isConfirmedRef.current) return;
+    // Reveal the centered tattoo on first interaction so the user can see and grab it
+    showTattooRef.current = true;
     if (e.touches.length === 2) {
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
@@ -567,7 +566,7 @@ export default function TryOnWebcamScreen() {
       )}
 
       {/* Placement hint — shown until the tattoo is first placed */}
-      {!hasPlaced && !showConfirm && (
+      {!hasPlaced && !showConfirm && !isDragging.current && (
         <View style={styles.placementHint}>
           <Text style={styles.placementHintText}>👆 Drag to place your tattoo</Text>
         </View>
@@ -585,6 +584,7 @@ export default function TryOnWebcamScreen() {
                   setHasPlaced(true);
                   setIsConfirmed(true);
                   setShowConfirm(false);
+                  showTattooRef.current = true;
                   pendingConfirmRef.current = true;
                 }}
                 style={({ pressed }: { pressed: boolean }) => [
