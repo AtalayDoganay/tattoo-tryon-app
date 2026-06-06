@@ -289,17 +289,25 @@ export default function TryOnWebcamScreen() {
     // Size scales with a fixed base × user scale × distance from camera
     const baseSize = 100 * userScaleRef.current * clampedDistScale;
 
+    // The body-tracking fades below only make sense once the tattoo is locked to
+    // the body. While the user is still positioning it (it follows the cursor, not
+    // a landmark) keep it fully visible so it can't vanish mid-drag — only the
+    // opacity slider applies. isConfirmedRef is the placed-vs-positioning signal.
+    const isPlacing = !isConfirmedRef.current;
+
     // Fade as the body leaves the frame: 0 below 0.2 visibility, full at 0.5+
-    const visibilityFade = Math.min(1, Math.max(0, (avgVisibility - 0.2) / 0.3));
-    const visibilityAlpha = opacityRef.current * visibilityFade;
+    const visibilityFade = isPlacing
+      ? 1
+      : Math.min(1, Math.max(0, (avgVisibility - 0.2) / 0.3));
 
     // Fade as the person turns away: full until 60°, gone by 90° (sideways).
     // Past 90° compressionX flips negative, so fading out first hides that flip.
     const absRotation = Math.abs(rotationY);
-    const rotationFade = absRotation > Math.PI / 3
-      ? Math.max(0, 1 - (absRotation - Math.PI / 3) / (Math.PI / 6))
-      : 1.0;
-    const finalAlpha = visibilityAlpha * rotationFade;
+    const rotationFade = isPlacing || absRotation <= Math.PI / 3
+      ? 1.0
+      : Math.max(0, 1 - (absRotation - Math.PI / 3) / (Math.PI / 6));
+
+    const finalAlpha = opacityRef.current * visibilityFade * rotationFade;
 
     // Fully faded (turned around / out of frame) — skip every tattoo layer so
     // no ink or shadow ghost lingers over the camera feed.
