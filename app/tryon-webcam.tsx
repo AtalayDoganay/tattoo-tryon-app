@@ -23,30 +23,153 @@ const MEDIAPIPE_SCRIPTS = [
   'https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js',
 ];
 
-// Auto-detect placement: of all 33 pose landmarks, find the one closest to
-// where the user dropped the tattoo. That landmark becomes the tracking anchor.
-function findNearestLandmark(
-  x: number,
-  y: number,
-  landmarks2d: any[],
-  canvas: any,
-  mX: (x: number) => number
-): { landmark: any; index: number; dist: number } {
-  let nearest: any = null;
-  let minDist = Infinity;
-  let nearestIdx = 0;
+// Distance from point (px,py) to the segment (ax,ay)–(bx,by), in screen pixels.
+function distToSegment(
+  px: number, py: number,
+  ax: number, ay: number, bx: number, by: number
+): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq > 0 ? ((px - ax) * dx + (py - ay) * dy) / lenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
 
-  for (let i = 0; i < landmarks2d.length; i++) {
-    const lx = mX(landmarks2d[i].x);
-    const ly = landmarks2d[i].y * canvas.height;
-    const dist = Math.sqrt((x - lx) ** 2 + (y - ly) ** 2);
-    if (dist < minDist) {
-      minDist = dist;
-      nearest = landmarks2d[i];
-      nearestIdx = i;
+// Even–odd point-in-polygon for a small screen-space ring (the torso quad).
+function pointInPolygon(px: number, py: number, poly: { x: number; y: number }[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y;
+    const xj = poly[j].x, yj = poly[j].y;
+    if (((yi > py) !== (yj > py)) &&
+        px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+      inside = !inside;
     }
   }
-  return { landmark: nearest, index: nearestIdx, dist: minDist };
+  return inside;
+}
+
+type PlacementRegion = { kind: 'torso' | 'forearm' | 'none'; anchorIdx: number };
+
+// Route a placement tap to a body region from Pose landmarks. The torso is treated
+// as an AREA (shoulders+hips quad), so a chest tap resolves to torso even when a
+// single arm point is the closest landmark — that crude single-nearest behaviour is
+// what regressed torso placement after forearm tracking was added. Head/face taps
+// return 'none' (Pose exposes only sparse face points, no surface to wrap on).
+// `any`: MediaPipe landmarks are untyped CDN globals (no shipped types).
+function resolvePlacementRegion(
+  px: number,
+  py: number,
+  landmarks2d: any[],
+  canvasHeight: number,
+  mX: (x: number) => number
+): PlacementRegion {
+  const sx = (i: number) => mX(landmarks2d[i].x);
+  const sy = (i: number) => landmarks2d[i].y * canvasHeight;
+  const vis = (i: number) => landmarks2d[i].visibility ?? 1;
+  const nearestOf = (ids: number[]): number => {
+    let best = ids[0];
+    let bestD = Infinity;
+    for (const i of ids) {
+      const d = Math.hypot(px - sx(i), py - sy(i));
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+  };
+
+  // 1. Inside the torso quad (L/R shoulder + R/L hip) ⇒ definitively torso.
+  const torsoIdx = [11, 12, 24, 23];
+  const torsoTracked = torsoIdx.every((i) => vis(i) > 0.3);
+  let quad: { x: number; y: number }[] | null = null;
+  if (torsoTracked) {
+    quad = torsoIdx.map((i) => ({ x: sx(i), y: sy(i) }));
+    if (pointInPolygon(px, py, quad)) {
+      return { kind: 'torso', anchorIdx: nearestOf([11, 12, 23, 24]) };
+    }
+  }
+
+  // 2. Inside the head circle (and outside the torso) ⇒ no placement.
+  if (vis(0) > 0.5 && (vis(7) > 0.5 || vis(8) > 0.5)) {
+    const noseX = sx(0), noseY = sy(0);
+    const headRadius = 1.3 * Math.max(
+      Math.hypot(noseX - sx(7), noseY - sy(7)),
+      Math.hypot(noseX - sx(8), noseY - sy(8))
+    );
+    if (Math.hypot(px - noseX, py - noseY) < headRadius) {
+      return { kind: 'none', anchorIdx: -1 };
+    }
+  }
+
+  // 3. Otherwise pick the nearest surface: torso edge vs either forearm segment.
+  const dTorso = quad
+    ? Math.min(
+        distToSegment(px, py, quad[0].x, quad[0].y, quad[1].x, quad[1].y),
+        distToSegment(px, py, quad[1].x, quad[1].y, quad[2].x, quad[2].y),
+        distToSegment(px, py, quad[2].x, quad[2].y, quad[3].x, quad[3].y),
+        distToSegment(px, py, quad[3].x, quad[3].y, quad[0].x, quad[0].y)
+      )
+    : Infinity;
+  const dForeL = vis(13) > 0.3 && vis(15) > 0.3
+    ? distToSegment(px, py, sx(13), sy(13), sx(15), sy(15)) : Infinity;
+  const dForeR = vis(14) > 0.3 && vis(16) > 0.3
+    ? distToSegment(px, py, sx(14), sy(14), sx(16), sy(16)) : Infinity;
+
+  const minD = Math.min(dTorso, dForeL, dForeR);
+  if (!isFinite(minD)) {
+    return torsoTracked
+      ? { kind: 'torso', anchorIdx: nearestOf([11, 12, 23, 24]) }
+      : { kind: 'none', anchorIdx: -1 };
+  }
+  // Prefer torso on ties so chest taps never fall through to a limb.
+  if (minD === dTorso) return { kind: 'torso', anchorIdx: nearestOf([11, 12, 23, 24]) };
+  if (minD === dForeL) return { kind: 'forearm', anchorIdx: nearestOf([13, 15]) };
+  return { kind: 'forearm', anchorIdx: nearestOf([14, 16]) };
+}
+
+// Forearm 3D warp (Pose landmarks): orient the tattoo along the elbow→wrist axis
+// and foreshorten along it from the world-landmark z — the same poseWorldLandmarks
+// source the torso warp uses. Feeds the same draw3d transform as the chest, just
+// with a limb-derived anchor/axis/normal. `any`: MediaPipe landmarks are untyped
+// CDN globals (no shipped types), matching the region helpers above.
+function computeForearmWarp(
+  landmarks2d: any[],
+  landmarks3d: any[] | undefined,
+  elbowIdx: number,
+  wristIdx: number,
+  canvasHeight: number,
+  mX: (x: number) => number
+): { alignAngle: number; compressionX: number; compressionY: number; fadeVisibility: number } {
+  const elbow = landmarks2d[elbowIdx];
+  const wrist = landmarks2d[wristIdx];
+  const ex = mX(elbow.x);
+  const ey = elbow.y * canvasHeight;
+  const wx = mX(wrist.x);
+  const wy = wrist.y * canvasHeight;
+
+  // Orient the tattoo's local x-axis along the limb in screen space (mirror-aware via mX)
+  const alignAngle = Math.atan2(wy - ey, wx - ex);
+
+  // Foreshorten along the limb: cos(pitch) from the 3D axis. 1 = limb across the
+  // image plane (full length), → 0 as it points toward/away from the camera.
+  let alongFactor = 1;
+  if (landmarks3d) {
+    const e3 = landmarks3d[elbowIdx];
+    const w3 = landmarks3d[wristIdx];
+    const dx = w3.x - e3.x;
+    const dy = w3.y - e3.y;
+    const dz = w3.z - e3.z;
+    const planar = Math.hypot(dx, dy);
+    const len = Math.hypot(dx, dy, dz);
+    if (len > 1e-4) alongFactor = planar / len;
+  }
+
+  return {
+    alignAngle,
+    compressionX: alongFactor, // along-limb (local x after rotate(alignAngle))
+    compressionY: 1,           // across-limb stays full; segmentation clips the curve
+    fadeVisibility: Math.min(elbow.visibility ?? 1, wrist.visibility ?? 1),
+  };
 }
 
 export default function TryOnWebcamScreen() {
@@ -254,17 +377,25 @@ export default function TryOnWebcamScreen() {
       (lh.visibility ?? 1) + (rh.visibility ?? 1)
     ) / 4;
 
-    // On confirm: lock the tattoo to the nearest pose landmark where it was placed
+    // On confirm: resolve which body region the tattoo was dropped on, then anchor
+    // to it — torso taps lock to a torso landmark (torso warp), forearm taps to the
+    // elbow/wrist (forearm warp). Head/face taps have no surface on Pose, so they
+    // don't place.
     if (pendingConfirmRef.current) {
-      const nearest = findNearestLandmark(
+      const region = resolvePlacementRegion(
         manualXRef.current, manualYRef.current,
-        landmarks2d, canvas, mX
+        landmarks2d, canvas.height, mX
       );
-      if (nearest.landmark) {
-        anchorLandmarkIdx.current = nearest.index;
-        anchorOffsetX.current = manualXRef.current - mX(nearest.landmark.x);
-        anchorOffsetY.current = manualYRef.current - nearest.landmark.y * canvas.height;
-        pendingConfirmRef.current = false;
+      pendingConfirmRef.current = false;
+      if (region.kind === 'none') {
+        // No valid surface (head/face) — revert to positioning so the tattoo stays
+        // draggable instead of snapping to the nose.
+        setIsConfirmed(false);
+      } else {
+        const anchor = landmarks2d[region.anchorIdx];
+        anchorLandmarkIdx.current = region.anchorIdx;
+        anchorOffsetX.current = manualXRef.current - mX(anchor.x);
+        anchorOffsetY.current = manualYRef.current - anchor.y * canvas.height;
         setAnchorSet(true);
       }
     }
@@ -283,6 +414,34 @@ export default function TryOnWebcamScreen() {
     lastDrawnX.current = x;
     lastDrawnY.current = y;
 
+    // Which surface is the tattoo on? Default to the torso warp computed above; if
+    // it's anchored to a forearm landmark (13/15 left, 14/16 right), re-derive the
+    // warp from that limb instead. alignAngle stays 0 for the torso so draw3d is
+    // byte-identical there. (Hand surface is a follow-up — hand landmarks fall back
+    // to the torso warp for now.)
+    let alignAngle = 0;
+    let surfaceVisibility = avgVisibility; // torso: shoulders + hips
+    let useTorsoTurnFade = true;           // torso fades as it yaws toward its back
+    if (isConfirmedRef.current && anchorSetRef.current) {
+      const idx = anchorLandmarkIdx.current;
+      const isLeftForearm = idx === 13 || idx === 15;
+      const isRightForearm = idx === 14 || idx === 16;
+      if (isLeftForearm || isRightForearm) {
+        const warp = computeForearmWarp(
+          landmarks2d, landmarks3d,
+          isLeftForearm ? 13 : 14,
+          isLeftForearm ? 15 : 16,
+          canvas.height, mX
+        );
+        alignAngle = warp.alignAngle;
+        compressionX = warp.compressionX;
+        compressionY = warp.compressionY;
+        skewFactor = 0;
+        surfaceVisibility = warp.fadeVisibility;
+        useTorsoTurnFade = false;
+      }
+    }
+
     const img = tattooImageRef.current;
     if (!img || !img.complete || img.naturalWidth === 0) return;
 
@@ -295,15 +454,16 @@ export default function TryOnWebcamScreen() {
     // opacity slider applies. isConfirmedRef is the placed-vs-positioning signal.
     const isPlacing = !isConfirmedRef.current;
 
-    // Fade as the body leaves the frame: 0 below 0.2 visibility, full at 0.5+
+    // Fade as the surface leaves the frame / loses tracking: 0 below 0.2, full at 0.5+
     const visibilityFade = isPlacing
       ? 1
-      : Math.min(1, Math.max(0, (avgVisibility - 0.2) / 0.3));
+      : Math.min(1, Math.max(0, (surfaceVisibility - 0.2) / 0.3));
 
-    // Fade as the person turns away: full until 60°, gone by 90° (sideways).
+    // Torso only: fade as the person turns away — full until 60°, gone by 90°.
     // Past 90° compressionX flips negative, so fading out first hides that flip.
+    // The forearm relies on its own foreshorten + visibility fade, not this yaw fade.
     const absRotation = Math.abs(rotationY);
-    const rotationFade = isPlacing || absRotation <= Math.PI / 3
+    const rotationFade = isPlacing || !useTorsoTurnFade || absRotation <= Math.PI / 3
       ? 1.0
       : Math.max(0, 1 - (absRotation - Math.PI / 3) / (Math.PI / 6));
 
@@ -316,7 +476,7 @@ export default function TryOnWebcamScreen() {
     // Apply 3D perspective matrix + draw tattoo centered at (px, py)
     const draw3d = (targetCtx: any, px: number, py: number) => {
       targetCtx.translate(px, py);
-      targetCtx.rotate((userRotationRef.current * Math.PI) / 180);
+      targetCtx.rotate((userRotationRef.current * Math.PI) / 180 + alignAngle);
       targetCtx.transform(
         compressionX, skewFactor,
         -skewFactor * 0.3, compressionY,
@@ -381,7 +541,7 @@ export default function TryOnWebcamScreen() {
       ctx.globalCompositeOperation = 'overlay';
       ctx.globalAlpha = 0.06 * finalAlpha;
       ctx.translate(x, y);
-      ctx.rotate((userRotationRef.current * Math.PI) / 180);
+      ctx.rotate((userRotationRef.current * Math.PI) / 180 + alignAngle);
       ctx.transform(compressionX, skewFactor, -skewFactor * 0.3, compressionY, 0, 0);
       if (compressionX < 0) ctx.scale(-1, 1);
       ctx.drawImage(
