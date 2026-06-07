@@ -11,6 +11,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppTheme, Fonts } from '@/constants/theme';
+import {
+  FACE_TRIANGULATION,
+  FACE_CHEEK_LEFT,
+  FACE_CHEEK_RIGHT,
+} from '@/constants/faceMesh';
+import { FaceTattooSession, isFaceTattooSupported } from '@/lib/faceJeeliz';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const CONTROLS_HEIGHT = 240;
@@ -22,6 +28,15 @@ const MEDIAPIPE_SCRIPTS = [
   'https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js',
   'https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js',
 ];
+
+// MediaPipe Tasks-Vision (Face Landmarker) — loaded lazily from CDN on the first face
+// placement so body-only sessions never download it. Version pinned; re-confirm against
+// npm if it ever 404s (a load failure degrades to abandoning the face placement).
+const FACE_VISION_BUNDLE_URL =
+  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/vision_bundle.mjs';
+const FACE_WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm';
+const FACE_MODEL_URL =
+  'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
 
 // Distance from point (px,py) to the segment (ax,ay)–(bx,by), in screen pixels.
 function distToSegment(
@@ -50,7 +65,7 @@ function pointInPolygon(px: number, py: number, poly: { x: number; y: number }[]
   return inside;
 }
 
-type PlacementRegion = { kind: 'torso' | 'forearm' | 'none'; anchorIdx: number };
+type PlacementRegion = { kind: 'torso' | 'forearm' | 'none' | 'face'; anchorIdx: number };
 
 // Route a placement tap to a body region from Pose landmarks. The torso is treated
 // as an AREA (shoulders+hips quad), so a chest tap resolves to torso even when a
@@ -89,7 +104,8 @@ function resolvePlacementRegion(
     }
   }
 
-  // 2. Inside the head circle (and outside the torso) ⇒ no placement.
+  // 2. Inside the head circle (and outside the torso) ⇒ face placement, handled by
+  // the Face Landmarker mesh path rather than the Pose anchor system.
   if (vis(0) > 0.5 && (vis(7) > 0.5 || vis(8) > 0.5)) {
     const noseX = sx(0), noseY = sy(0);
     const headRadius = 1.3 * Math.max(
@@ -97,7 +113,7 @@ function resolvePlacementRegion(
       Math.hypot(noseX - sx(8), noseY - sy(8))
     );
     if (Math.hypot(px - noseX, py - noseY) < headRadius) {
-      return { kind: 'none', anchorIdx: -1 };
+      return { kind: 'face', anchorIdx: -1 };
     }
   }
 
@@ -172,6 +188,88 @@ function computeForearmWarp(
   };
 }
 
+// ── Face try-on geometry (piecewise-affine triangle warp) ───────────────────────
+// A tattoo "stuck" to the face mesh: the covered triangles + the tattoo image's UV
+// coords at each triangle vertex, captured once at placement, re-warped each frame.
+type FaceTriangle = { a: number; b: number; c: number; uv: [number, number][] };
+type FacePlacement = { triangles: FaceTriangle[] };
+// The flat tattoo footprint at placement time, in screen px: center, size, rotation.
+type FaceFootprint = { cx: number; cy: number; size: number; rot: number };
+
+// Capture which mesh triangles the tattoo covers and each vertex's UV (0..1) inside
+// the tattoo footprint. screenPts are the live face landmarks mapped to canvas px.
+function captureFaceTriangles(
+  footprint: FaceFootprint,
+  screenPts: { x: number; y: number }[]
+): FaceTriangle[] {
+  const cos = Math.cos(-footprint.rot);
+  const sin = Math.sin(-footprint.rot);
+  const toUV = (p: { x: number; y: number }): [number, number] => {
+    const dx = p.x - footprint.cx;
+    const dy = p.y - footprint.cy;
+    const lx = dx * cos - dy * sin; // un-rotate into the tattoo's local frame
+    const ly = dx * sin + dy * cos;
+    return [(lx + footprint.size / 2) / footprint.size, (ly + footprint.size / 2) / footprint.size];
+  };
+  const tris: FaceTriangle[] = [];
+  for (let i = 0; i < FACE_TRIANGULATION.length; i += 3) {
+    const a = FACE_TRIANGULATION[i];
+    const b = FACE_TRIANGULATION[i + 1];
+    const c = FACE_TRIANGULATION[i + 2];
+    const ua = toUV(screenPts[a]);
+    const ub = toUV(screenPts[b]);
+    const uc = toUV(screenPts[c]);
+    // Keep the triangle if its UV bbox meets the unit square; the tattoo PNG's own
+    // alpha (and the image bounds) clip whatever falls outside the footprint.
+    if (Math.max(ua[0], ub[0], uc[0]) < 0 || Math.min(ua[0], ub[0], uc[0]) > 1) continue;
+    if (Math.max(ua[1], ub[1], uc[1]) < 0 || Math.min(ua[1], ub[1], uc[1]) > 1) continue;
+    tris.push({ a, b, c, uv: [ua, ub, uc] });
+  }
+  return tris;
+}
+
+// Warp one image-space triangle (src px) onto a screen-space triangle (dst px) via an
+// affine transform + clip — the canvas-2D equivalent of textured UV mapping. dst is
+// inflated ~0.6px from its centroid to hide the hairline seams between triangles.
+function drawWarpedTriangle(
+  ctx: CanvasRenderingContext2D,
+  img: CanvasImageSource,
+  s0x: number, s0y: number, s1x: number, s1y: number, s2x: number, s2y: number,
+  d0x: number, d0y: number, d1x: number, d1y: number, d2x: number, d2y: number
+): void {
+  const gx = (d0x + d1x + d2x) / 3;
+  const gy = (d0y + d1y + d2y) / 3;
+  const push = (x: number, y: number): [number, number] => {
+    const vx = x - gx, vy = y - gy;
+    const l = Math.hypot(vx, vy) || 1;
+    const k = (l + 0.6) / l;
+    return [gx + vx * k, gy + vy * k];
+  };
+  const [e0x, e0y] = push(d0x, d0y);
+  const [e1x, e1y] = push(d1x, d1y);
+  const [e2x, e2y] = push(d2x, d2y);
+
+  const denom = s0x * (s2y - s1y) + s1x * (s0y - s2y) + s2x * (s1y - s0y);
+  if (Math.abs(denom) < 1e-6) return;
+  const a = (e0x * (s2y - s1y) + e1x * (s0y - s2y) + e2x * (s1y - s0y)) / denom;
+  const b = (e0y * (s2y - s1y) + e1y * (s0y - s2y) + e2y * (s1y - s0y)) / denom;
+  const c = (e0x * (s1x - s2x) + e1x * (s2x - s0x) + e2x * (s0x - s1x)) / denom;
+  const d = (e0y * (s1x - s2x) + e1y * (s2x - s0x) + e2y * (s0x - s1x)) / denom;
+  const e = (e0x * (s2x * s1y - s1x * s2y) + e1x * (s0x * s2y - s2x * s0y) + e2x * (s1x * s0y - s0x * s1y)) / denom;
+  const f = (e0y * (s2x * s1y - s1x * s2y) + e1y * (s0x * s2y - s2x * s0y) + e2y * (s1x * s0y - s0x * s1y)) / denom;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(e0x, e0y);
+  ctx.lineTo(e1x, e1y);
+  ctx.lineTo(e2x, e2y);
+  ctx.closePath();
+  ctx.clip();
+  ctx.setTransform(a, b, c, d, e, f);
+  ctx.drawImage(img, 0, 0);
+  ctx.restore();
+}
+
 export default function TryOnWebcamScreen() {
   const insets = useSafeAreaInsets();
   const { tattooBase64 } = useLocalSearchParams<{ tattooBase64: string }>();
@@ -187,6 +285,8 @@ export default function TryOnWebcamScreen() {
   const [anchorSet, setAnchorSet] = useState(false);
   const [isMirrored, setIsMirrored] = useState(true);
   const [hasPlaced, setHasPlaced] = useState(false);
+  const [faceLoading, setFaceLoading] = useState(false);
+  const [faceMode, setFaceMode] = useState(false); // Jeeliz WebGL face path active (web-only)
 
   const videoRef = useRef<any>(null);
   const canvasRef = useRef<any>(null);
@@ -210,6 +310,24 @@ export default function TryOnWebcamScreen() {
   const isMirroredRef = useRef(true);
   const showTattooRef = useRef(false); // becomes true on first drag / confirm — gates drawing
 
+  // Face try-on (MediaPipe Tasks Face Landmarker) — lazy, runs only for a face tattoo
+  const faceLandmarkerRef = useRef<any>(null);          // any: FaceLandmarker from untyped CDN ESM module
+  const faceLandmarkerLoadingRef = useRef(false);
+  const faceEngagedRef = useRef(false);                 // a face tattoo is loading/active → use the face path
+  const pendingFaceCaptureRef = useRef<FaceFootprint | null>(null);
+  const facePlacementRef = useRef<FacePlacement | null>(null);
+  const faceFadeRef = useRef(1);                        // smoothed track / turn-away fade
+  const faceOffscreenRef = useRef<any>(null);           // any: offscreen HTMLCanvasElement (web-only)
+
+  // Jeeliz WebGL face path (web-only) — supersedes the MediaPipe face refs above, which
+  // are now dormant (kept reversible until the Jeeliz path is verified).
+  const faceSessionRef = useRef<FaceTattooSession | null>(null);
+  const cameraRef = useRef<any>(null);                  // any: camera_utils Camera (web-only)
+  const faceVideoCanvasRef = useRef<any>(null);         // any: Jeeliz <canvas> (web-only)
+  const faceThreeCanvasRef = useRef<any>(null);         // any: Three.js overlay <canvas> (web-only)
+  // any: image is an HTMLImageElement (web-only)
+  const pendingFacePlacementRef = useRef<{ dropXNorm: number; dropYNorm: number; image: any; scale: number; rotationRad: number } | null>(null);
+
   // Drag state refs
   const isDragging = useRef(false);
   const dragOffsetX = useRef(0);
@@ -218,7 +336,10 @@ export default function TryOnWebcamScreen() {
 
   useEffect(() => { userScaleRef.current = userScale; }, [userScale]);
   useEffect(() => { userRotationRef.current = userRotation; }, [userRotation]);
-  useEffect(() => { opacityRef.current = opacity; }, [opacity]);
+  useEffect(() => {
+    opacityRef.current = opacity;
+    if (faceSessionRef.current) faceSessionRef.current.setOpacity(opacity);
+  }, [opacity]);
   useEffect(() => { manualXRef.current = manualX; }, [manualX]);
   useEffect(() => { manualYRef.current = manualY; }, [manualY]);
   useEffect(() => { isConfirmedRef.current = isConfirmed; }, [isConfirmed]);
@@ -290,6 +411,84 @@ export default function TryOnWebcamScreen() {
     };
   }, []);
 
+  // Jeeliz WebGL face session lifecycle (web-only) — created once its canvases are laid
+  // out (faceMode → true) and torn down on exit. Pose body/forearm path is unaffected.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !faceMode) return;
+    const jc = faceVideoCanvasRef.current;
+    const tc = faceThreeCanvasRef.current;
+    const video = videoRef.current;
+    if (!jc || !tc || !video) return;
+    const w = jc.offsetWidth || canvasRef.current?.offsetWidth || 1;
+    const h = jc.offsetHeight || CANVAS_HEIGHT;
+    let cancelled = false;
+    const session = new FaceTattooSession();
+    faceSessionRef.current = session;
+    session.setOpacity(opacityRef.current);
+    session.start({
+      jeelizCanvas: jc,
+      threeCanvas: tc,
+      videoElement: video,
+      width: w,
+      height: h,
+      onReady: () => {
+        if (cancelled) return;
+        const p = pendingFacePlacementRef.current;
+        if (p && p.image) session.placeTattoo(p);
+        setFaceLoading(false);
+      },
+      onError: (code) => {
+        if (cancelled) return;
+        console.error('Jeeliz face tracking failed:', code);
+        faceEngagedRef.current = false;
+        pendingFacePlacementRef.current = null;
+        setFaceLoading(false);
+        setFaceMode(false);
+        setIsConfirmed(false);
+      },
+    });
+    return () => {
+      cancelled = true;
+      const cam = cameraRef.current;
+      session.destroy().finally(() => {
+        // Jeeliz tears down the shared <video> on destroy — restart the Pose camera so
+        // the body/forearm path gets live frames again (avoids "no body detected").
+        if (cam && cam.start) { try { cam.start(); } catch {} }
+      });
+      if (faceSessionRef.current === session) faceSessionRef.current = null;
+    };
+  }, [faceMode]);
+
+  // Enter the Jeeliz WebGL face path: snapshot the (locked) drop point, flip on face
+  // mode; the effect above builds the session once the canvases are sized.
+  function enterFaceMode() {
+    if (!isFaceTattooSupported()) { setIsConfirmed(false); return; }
+    const canvas = canvasRef.current;
+    if (!canvas) { setIsConfirmed(false); return; }
+    const w = canvas.offsetWidth || 1;
+    const h = canvas.offsetHeight || 1;
+    let dropXNorm = manualXRef.current / w;
+    const dropYNorm = manualYRef.current / h;
+    if (isMirroredRef.current) dropXNorm = 1 - dropXNorm; // → face space (un-mirrored)
+    pendingFacePlacementRef.current = {
+      dropXNorm,
+      dropYNorm,
+      image: tattooImageRef.current,
+      scale: userScaleRef.current,
+      rotationRad: (userRotationRef.current * Math.PI) / 180,
+    };
+    faceEngagedRef.current = true;
+    setFaceLoading(true);
+    setFaceMode(true);
+  }
+
+  function exitFaceMode() {
+    faceEngagedRef.current = false;
+    pendingFacePlacementRef.current = null;
+    setFaceLoading(false);
+    setFaceMode(false);
+  }
+
   function onResults(results: any) {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -309,6 +508,10 @@ export default function TryOnWebcamScreen() {
     } else {
       ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
     }
+
+    // A face placement is loading/active — the Face Landmarker path renders the tattoo;
+    // the Pose path only paints the camera feed (no body warp on the face).
+    if (faceEngagedRef.current) return;
 
     if (!results.poseLandmarks) { setStatus('no_body'); return; }
     setStatus('ready');
@@ -388,9 +591,13 @@ export default function TryOnWebcamScreen() {
       );
       pendingConfirmRef.current = false;
       if (region.kind === 'none') {
-        // No valid surface (head/face) — revert to positioning so the tattoo stays
-        // draggable instead of snapping to the nose.
+        // No valid surface — revert to positioning so the tattoo stays draggable.
         setIsConfirmed(false);
+      } else if (region.kind === 'face') {
+        // Hand off to the Jeeliz WebGL face path (web-only). Drag is locked once
+        // confirmed, so enterFaceMode snapshots the drop point; the faceMode effect
+        // builds the Jeeliz session and places the tattoo when tracking is ready.
+        enterFaceMode();
       } else {
         const anchor = landmarks2d[region.anchorIdx];
         anchorLandmarkIdx.current = region.anchorIdx;
@@ -578,6 +785,126 @@ export default function TryOnWebcamScreen() {
     }
   }
 
+  async function ensureFaceLandmarker() {
+    if (Platform.OS !== 'web') return;
+    if (faceLandmarkerRef.current || faceLandmarkerLoadingRef.current) return;
+    faceLandmarkerLoadingRef.current = true;
+    try {
+      // Bundler-opaque dynamic import so Metro doesn't try to resolve the CDN URL at
+      // build time — this stays a real runtime browser import (web-only path).
+      const importESM = new Function('u', 'return import(u)') as (u: string) => Promise<any>; // any: untyped CDN ESM
+      const vision: any = await importESM(FACE_VISION_BUNDLE_URL); // any: MediaPipe tasks-vision module
+      const fileset = await vision.FilesetResolver.forVisionTasks(FACE_WASM_URL);
+      faceLandmarkerRef.current = await vision.FaceLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: FACE_MODEL_URL, delegate: 'GPU' },
+        runningMode: 'VIDEO',
+        numFaces: 1,
+        outputFaceBlendshapes: false,
+        outputFacialTransformationMatrixes: false,
+      });
+    } catch (e) {
+      console.error('Face Landmarker load failed:', e);
+      // Degrade gracefully: abandon the face placement, back to positioning.
+      faceEngagedRef.current = false;
+      pendingFaceCaptureRef.current = null;
+      setFaceLoading(false);
+      setIsConfirmed(false);
+    } finally {
+      faceLandmarkerLoadingRef.current = false;
+    }
+  }
+
+  // Face render path — runs INSTEAD of Pose while a face tattoo is engaged. Draws the
+  // camera feed, detects the mesh, captures the footprint once, then warps the tattoo
+  // onto the live triangles and composites it as skin ink (multiply).
+  function renderFaceFrame(video: HTMLVideoElement) {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | null;
+    const landmarker = faceLandmarkerRef.current;
+    if (!ctx || !landmarker) return;
+
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Camera feed (mirror-aware, identical to the Pose path)
+    if (isMirroredRef.current) {
+      ctx.save();
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+      ctx.restore();
+    } else {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    }
+
+    let result: any; // any: MediaPipe FaceLandmarkerResult (untyped CDN module)
+    try {
+      result = landmarker.detectForVideo(video, performance.now());
+    } catch {
+      return; // detector mid-init this frame
+    }
+    const face: any = result?.faceLandmarks?.[0] ?? null; // any: array of {x,y,z}
+
+    // Fade: 0 with no face, else fade as the head turns away (cheek z-depth gap).
+    let target = 0;
+    if (face) {
+      const dz = Math.abs(face[FACE_CHEEK_LEFT].z - face[FACE_CHEEK_RIGHT].z);
+      target = Math.min(1, Math.max(0, 1 - (dz - 0.04) / 0.06)); // full < 0.04, gone > 0.10
+    }
+    faceFadeRef.current += (target - faceFadeRef.current) * 0.3;
+    if (!face) return;
+
+    const w = canvas.width;
+    const h = canvas.height;
+    const screenPts = face.map((p: { x: number; y: number }) => ({
+      x: isMirroredRef.current ? (1 - p.x) * w : p.x * w,
+      y: p.y * h,
+    }));
+
+    // One-time "stick it on": capture covered triangles + UV from the drop footprint.
+    if (pendingFaceCaptureRef.current) {
+      facePlacementRef.current = { triangles: captureFaceTriangles(pendingFaceCaptureRef.current, screenPts) };
+      pendingFaceCaptureRef.current = null;
+      setFaceLoading(false);
+    }
+
+    const placement = facePlacementRef.current;
+    const img = tattooImageRef.current;
+    const fade = faceFadeRef.current;
+    if (!placement || !img || !img.complete || img.naturalWidth === 0 || fade <= 0.01) return;
+
+    // Warp onto an offscreen canvas (opaque), then composite once with multiply so it
+    // reads as ink under the skin — the same blend the body path uses.
+    if (!faceOffscreenRef.current) faceOffscreenRef.current = document.createElement('canvas');
+    const off = faceOffscreenRef.current;
+    off.width = w;
+    off.height = h;
+    const offCtx = off.getContext('2d') as CanvasRenderingContext2D | null;
+    if (!offCtx) return;
+    offCtx.clearRect(0, 0, w, h);
+    const iw = img.naturalWidth;
+    const ih = img.naturalHeight;
+    for (const t of placement.triangles) {
+      const da = screenPts[t.a];
+      const db = screenPts[t.b];
+      const dc = screenPts[t.c];
+      drawWarpedTriangle(
+        offCtx, img,
+        t.uv[0][0] * iw, t.uv[0][1] * ih,
+        t.uv[1][0] * iw, t.uv[1][1] * ih,
+        t.uv[2][0] * iw, t.uv[2][1] * ih,
+        da.x, da.y, db.x, db.y, dc.x, dc.y
+      );
+    }
+
+    ctx.save();
+    ctx.globalAlpha = opacityRef.current * fade;
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.drawImage(off, 0, 0);
+    ctx.restore();
+  }
+
   function initPose() {
     const win = window as any;
     const pose = new win.Pose({
@@ -598,12 +925,18 @@ export default function TryOnWebcamScreen() {
 
     const camera = new win.Camera(videoRef.current, {
       onFrame: async () => {
-        if (videoRef.current) await pose.send({ image: videoRef.current });
+        if (!videoRef.current) return;
+        // In face mode, Jeeliz reads the SHARED <video> and drives its own render loop,
+        // so the Pose model sits idle (never two trackers at once). Otherwise → Pose.
+        if (faceEngagedRef.current) return;
+        // Guarded: right after exiting face mode the camera may be mid-restart.
+        try { await pose.send({ image: videoRef.current }); } catch {}
       },
       width: 1280,
       height: 720,
     });
 
+    cameraRef.current = camera;
     camera.start();
     setStatus('ready');
   }
@@ -712,7 +1045,9 @@ export default function TryOnWebcamScreen() {
     );
   }
 
-  const statusMessage = isConfirmed
+  const statusMessage = faceLoading
+    ? 'Loading face tracking…'
+    : isConfirmed
     ? 'Tattoo placed — looks real! 🔥'
     : status === 'loading'
     ? 'Loading AR... please wait'
@@ -731,7 +1066,7 @@ export default function TryOnWebcamScreen() {
         style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' } as any}
       />
 
-      {/* Canvas — camera feed + tattoo drawn here */}
+      {/* Canvas — camera feed + tattoo (Pose body/forearm 2D path). Hidden in face mode. */}
       <canvas
         ref={canvasRef}
         onMouseDown={handleMouseDown}
@@ -746,7 +1081,38 @@ export default function TryOnWebcamScreen() {
           width: '100%',
           height: CANVAS_HEIGHT,
           backgroundColor: '#111',
+          display: faceMode ? 'none' : 'block',
           cursor: isConfirmed ? 'default' : isDragging.current ? 'grabbing' : 'grab',
+        } as any}
+      />
+
+      {/* Jeeliz WebGL face path (web-only): camera video on one canvas, the transparent
+          3D tattoo overlay on a second. Shown only in face mode; CSS-mirrored to match
+          the selfie feed. */}
+      <canvas
+        ref={faceVideoCanvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: CANVAS_HEIGHT,
+          backgroundColor: '#111',
+          display: faceMode ? 'block' : 'none',
+          transform: isMirrored ? 'scaleX(-1)' : 'none',
+        } as any}
+      />
+      <canvas
+        ref={faceThreeCanvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: CANVAS_HEIGHT,
+          display: faceMode ? 'block' : 'none',
+          transform: isMirrored ? 'scaleX(-1)' : 'none',
+          pointerEvents: 'none',
         } as any}
       />
 
@@ -940,6 +1306,9 @@ export default function TryOnWebcamScreen() {
                 setManualY(lastDrawnY.current);
                 manualXRef.current = lastDrawnX.current;
                 manualYRef.current = lastDrawnY.current;
+                // Exit the WebGL face path if this was a face placement (tears down
+                // the Jeeliz session via the faceMode effect cleanup).
+                exitFaceMode();
               }}
               style={({ pressed }: { pressed: boolean }) => [styles.repositionBtn, { opacity: pressed ? 0.7 : 1 }]}
             >
