@@ -1,0 +1,84 @@
+name: Bug report
+description: Something in the app or the API is not working correctly.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Before you post — this issue is public
+
+        Anything you paste here is visible to everyone, forever, including in
+        search engines and in scrapers that harvest leaked credentials.
+
+        **Never paste:**
+
+        - API keys, tokens, or passwords
+        - the contents of a `.env` file
+        - `Authorization:` headers, JWTs, or session cookies
+        - database connection strings or Supabase `service_role` keys
+        - full production logs, which usually contain other people's data
+        - photographs of other people
+
+        Replace any such value with `REDACTED` before submitting.
+
+        **Found a security vulnerability?** Do not use this form. Report it
+        privately: see
+        [SECURITY.md](https://github.com/AtalayDoganay/tattoo-tryon-app/blob/main/SECURITY.md).
+
+  - type: checkboxes
+    id: no-secrets
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have removed all keys, tokens, personal data, and photographs of other people from this report.
+          required: true
+        - label: This is not a security vulnerability (those go through private reporting).
+          required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the app?
+      options:
+        - Web app (browser)
+        - Mobile app (iOS / Android)
+        - AR try-on / camera
+        - Background removal
+        - Manager dashboard / sign-in
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to ...
+        2. Tap ...
+        3. See ...
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Device / browser
+      placeholder: "e.g. iPhone 15, iOS 18, Safari — or Windows 11, Chrome 140"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console output (optional)
+      description: >-
+        Redact tokens and personal data first. This is rendered as code, so no
+        formatting is needed.
+      render: text

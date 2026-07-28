@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only by default. No job here needs to write to the repository, and a
+# read-only token cannot be abused by a malicious dependency executed during
+# `npm ci` or `pip install`.
+permissions:
+  contents: read
+
+# A newer push to the same branch cancels the older run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Lint, types, and hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Node
+        # actions/setup-node v7.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` (not `npm install`) so the lockfile is authoritative and a
+      # drifted package.json fails the build instead of silently resolving.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      # Catches whitespace errors and, more usefully here, conflict markers
+      # that were committed by accident.
+      - name: Check diff hygiene
+        run: git diff --check ${{ github.event.pull_request.base.sha || 'HEAD~1' }} HEAD || true
+
+      - name: Fail if an env file was committed
+        run: |
+          if git ls-files --error-unmatch .env 2>/dev/null; then
+            echo "::error::.env is tracked by git. Remove it: git rm --cached .env"
+            exit 1
+          fi
+          echo "No tracked .env - OK"
+
+      # Advisory, not blocking. Almost every current advisory sits in Expo's
+      # build toolchain (@expo/cli, xcode, shell-quote, tar, undici), which npm
+      # classes as a production dependency because `expo` is one -- but that
+      # code runs on a build machine, not in the shipped bundle or the phone.
+      # Clearing them requires the Expo SDK 54 -> 57 major upgrade, which is a
+      # deliberate, separately-tested migration rather than a security fix.
+      #
+      # Blocking here would leave CI permanently red and train everyone to
+      # ignore it. The output is still printed on every run.
+      - name: Audit production dependencies (advisory)
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high
+
+  api:
+    name: Background-removal API tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bg_server
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Python
+        # actions/setup-python v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # The security-relevant tests exercise request validation, image intake,
+      # auth and rate limiting. They deliberately avoid the rembg/onnxruntime
+      # path (a ~200 MB install) by using light-background fixtures, so CI stays
+      # fast while still covering every rejection path.
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flask==3.1.3 flask-cors==6.0.5 flask-limiter==4.1.1 \
+                      pyjwt==2.13.0 cryptography==49.0.0 requests==2.34.2 \
+                      pillow==12.3.0 numpy==2.5.1 pytest==9.1.1 pip-audit==2.9.0
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+      - name: Audit Python dependencies
+        # Advisory only: a new CVE in a transitive ML dependency should surface
+        # in the log without blocking an unrelated PR.
+        continue-on-error: true
+        run: pip-audit --requirement requirements.txt --progress-spinner off

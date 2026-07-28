@@ -1,0 +1,55 @@
+version: 2
+
+updates:
+  # --- JavaScript / Expo app ------------------------------------------------
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    labels: [dependencies, security]
+    # Expo pins the versions of its own packages to the SDK release. Letting
+    # Dependabot bump them individually produces builds Expo does not support,
+    # so those move together via `npx expo install --check` instead.
+    ignore:
+      - dependency-name: expo
+        update-types: [version-update:semver-major]
+      - dependency-name: expo-*
+        update-types: [version-update:semver-major]
+      - dependency-name: react-native
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: react
+        update-types: [version-update:semver-major]
+      - dependency-name: react-dom
+        update-types: [version-update:semver-major]
+    groups:
+      # One PR for routine patch noise instead of a dozen.
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  # --- Python background-removal API ---------------------------------------
+  - package-ecosystem: pip
+    directory: /bg_server
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    labels: [dependencies, security]
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  # --- GitHub Actions -------------------------------------------------------
+  # Actions are pinned to full commit SHAs; Dependabot understands that pinning
+  # and will bump the SHA while updating the version comment beside it.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 3
+    labels: [dependencies, security, ci]

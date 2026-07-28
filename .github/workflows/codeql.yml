@@ -1,0 +1,62 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so newly-published queries reach existing code without a push.
+    - cron: "27 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to upload results to the Security tab.
+      security-events: write
+      # Required by the CodeQL action to read workflow run metadata.
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, python]
+
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Initialize CodeQL
+        # github/codeql-action v4
+        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81
+        with:
+          languages: ${{ matrix.language }}
+          # security-extended adds lower-severity and precision-tuned queries on
+          # top of the default suite. Supported on public repositories.
+          queries: security-extended
+          # Vendored agent tooling under .agents/ and .claude/ is not part of
+          # the shipped application; scanning it produces noise, not findings.
+          config: |
+            paths-ignore:
+              - .agents
+              - .claude
+              - node_modules
+              - dist
+
+      - name: Autobuild
+        # github/codeql-action v4
+        uses: github/codeql-action/autobuild@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81
+
+      - name: Perform CodeQL analysis
+        # github/codeql-action v4
+        uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81
+        with:
+          category: "/language:${{ matrix.language }}"

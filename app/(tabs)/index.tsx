@@ -224,7 +224,7 @@ export default function HomeScreen() {
           <Text style={styles.eyebrow}>EST. 2025 — CUSTOM INK</Text>
           <Text style={styles.heroTitle}>Frog God</Text>
           <Text style={styles.heroTitleAccent}>Tattoo</Text>
-          <Text style={styles.heroSub}>TRY ON YOUR INK BEFORE IT'S PERMANENT</Text>
+          <Text style={styles.heroSub}>TRY ON YOUR INK BEFORE IT&apos;S PERMANENT</Text>
           <View style={styles.heroBtns}>
             <Pressable
               onPress={scrollToArtists}

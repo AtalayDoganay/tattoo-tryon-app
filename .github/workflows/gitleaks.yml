@@ -1,0 +1,41 @@
+name: Secret scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: the job only needs to read repository contents.
+# PR commenting and SARIF artifact upload are disabled below, so no
+# write scopes are required.
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # Required so gitleaks can scan every commit, not just the tip.
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        # gitleaks/gitleaks-action v3.0.0
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No GITLEAKS_LICENSE: this is a personal-account repository.
+          # A license key is only required for organization-owned repos.
+          #
+          # Keep PR commenting off so the token stays read-only.
+          # Quoted: the action compares these against the string "false".
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          # This repository is public, so its workflow artifacts are public.
+          # Uploading the SARIF report would publish any secret gitleaks found.
+          # Read findings in the job log/summary instead.
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"

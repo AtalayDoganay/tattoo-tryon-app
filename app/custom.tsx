@@ -53,7 +53,7 @@ export default function CustomScreen() {
             </Text>
 
             <Text style={[styles.bookingSubtext, { color: theme.tabIconDefault }]}>
-              Once you upload your design, you'll be able to schedule a consultation with our team to discuss your custom tattoo.
+              Once you upload your design, you&apos;ll be able to schedule a consultation with our team to discuss your custom tattoo.
             </Text>
           </Card>
         </View>
