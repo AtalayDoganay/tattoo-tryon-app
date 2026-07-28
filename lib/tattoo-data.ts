@@ -16,11 +16,11 @@ export async function fetchShops(): Promise<Shop[]> {
     .order('name');
 
   if (error) {
-    console.error('[fetchShops] Supabase error:', error);
+    // Log the shape of the failure, not the payload: Supabase error objects can
+    // echo back the failing row and the request's auth context.
+    console.error('[fetchShops] Supabase query failed:', error.code ?? 'unknown');
     throw error;
   }
-
-  console.log('[fetchShops] raw data:', JSON.stringify(data));
 
   return (data as ShopRow[]).map((s) => ({
     id: s.id,

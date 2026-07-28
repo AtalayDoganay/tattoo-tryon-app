@@ -31,7 +31,10 @@ yarn-error.*
 *.pem
 
 # local env files
+# Ignore every .env variant, but keep the committed placeholder template.
 .env
+.env.*
+!.env.example
 .env.local
 .env*.local
 
@@ -48,3 +51,35 @@ app-example
 bg_server/__pycache__/
 bg_server/.venv/
 *.pyc
+
+# --- Security hardening: credentials & deployment state -----------------
+# Never commit signing material, tokens, or provider credentials.
+# (*.pem, *.key, *.p8, *.p12, *.jks, *.mobileprovision are covered above.)
+*.keystore
+*.token
+auth.json
+credentials.json
+service-account*.json
+.npmrc
+.sandbox-secrets
+.sandbox-secrets/
+
+# Deployment CLI state directories (contain project/org linkage and tokens)
+.railway/
+.vercel/
+.eas/
+
+# Supabase CLI scratch state (linked-project ref, CLI version cache).
+# Migrations under supabase/migrations/ and functions under
+# supabase/functions/ stay tracked on purpose.
+supabase/.temp/
+supabase/.branches/
+
+# Python environments & caches (root-level venv in addition to bg_server/)
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
