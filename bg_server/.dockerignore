@@ -1,0 +1,26 @@
+# Keeps secrets and local state out of the build context entirely, so they can
+# never end up in an image layer (deleting a file in a later layer does not
+# remove it from the earlier one).
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.p8
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Tests are not needed at runtime.
+tests/
+requirements-dev.txt
+
+*.onnx
+.u2net/
+README.md

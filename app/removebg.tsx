@@ -14,24 +14,55 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppTheme, Fonts } from '@/constants/theme';
+import { env } from '@/lib/env';
+import { supabase } from '@/lib/supabase';
 
-const SERVER_URL =
-  process.env.EXPO_PUBLIC_BG_SERVER_URL ?? 'http://localhost:5001';
+const SERVER_URL = env.bgServerUrl;
+
+// Server-side failures are reported to the user in our own words. The API
+// returns a stable machine-readable `code`; its human text is deliberately
+// generic and never carries a stack trace or internal detail.
+const ERROR_TEXT: Record<string, string> = {
+  payload_too_large: 'That image is too large. Try one under 8 MB.',
+  image_too_large: 'That image has too many pixels. Try a smaller photo.',
+  unsupported_format: 'Unsupported image format. Use PNG, JPEG, or WebP.',
+  invalid_image: 'That file could not be read as an image.',
+  invalid_request: 'The image could not be sent. Please pick it again.',
+  rate_limited: 'Too many requests. Please wait a moment and try again.',
+  unauthorized: 'Please sign in again to use background removal.',
+  origin_not_allowed: 'Background removal is not available from this address.',
+  processing_failed: 'Background removal failed. Please try another image.',
+};
 
 async function removeBackground(imageBase64: string): Promise<string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+  // Attach the caller's Supabase access token when signed in. The server may be
+  // configured to require it (REQUIRE_AUTH=true); when it is not, this still
+  // lets the server rate-limit per user instead of per shared IP.
+  const { data } = await supabase.auth.getSession();
+  const accessToken = data.session?.access_token;
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+
   const response = await fetch(`${SERVER_URL}/remove-bg`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ image: imageBase64 }),
   });
 
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error ?? `Server error (${response.status})`);
+    const body = await response.json().catch(() => ({}) as { code?: string });
+    const code = typeof body.code === 'string' ? body.code : '';
+    throw new Error(
+      ERROR_TEXT[code] ?? 'Background removal is unavailable right now.'
+    );
   }
 
-  const data = await response.json();
-  return data.image;
+  const body = await response.json();
+  if (typeof body.image !== 'string') {
+    throw new Error('Background removal returned an unexpected response.');
+  }
+  return body.image;
 }
 
 export default function RemoveBgScreen() {
@@ -79,8 +110,8 @@ export default function RemoveBgScreen() {
     setResultUri(null);
     setStatusMsg('Removing background...');
     try {
+      // Never log the result: it is the user's photograph as a data URL.
       const result = await removeBackground(imageBase64);
-      console.log('[removebg] result prefix:', result?.slice(0, 100));
       setResultUri(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'An error occurred.');

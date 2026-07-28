@@ -1,0 +1,6 @@
+# Test and audit tooling. Not installed into the production image.
+-r requirements.txt
+
+pytest==9.1.1
+# Dependency vulnerability audit (used by the CI workflow).
+pip-audit==2.9.0
