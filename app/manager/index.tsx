@@ -27,6 +27,34 @@ type DbShop = {
   owner_user_id: string;
 };
 
+// Only these raster types may be uploaded. The bucket is public-read, so an
+// uploaded SVG or HTML file would be a stored-XSS vector served from the
+// Supabase origin — hence an allowlist rather than a blocklist.
+const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+};
+
+/**
+ * Derives a safe storage extension from a picker URI. Anything unrecognised
+ * falls back to jpeg rather than trusting a user-controlled path fragment,
+ * which could otherwise inject `..`, a query string, or a second extension
+ * into the object key.
+ */
+function safeExtension(uri: string): string {
+  const match = /\.([a-zA-Z0-9]{1,5})(?:[?#].*)?$/.exec(uri);
+  const ext = match?.[1]?.toLowerCase() ?? '';
+  return ext in ALLOWED_UPLOAD_TYPES ? ext : 'jpg';
+}
+
+/** Random, unguessable object name — never the user's original filename. */
+function randomObjectName(ext: string): string {
+  const rand = Math.random().toString(36).slice(2, 10);
+  return `${Date.now()}-${rand}.${ext}`;
+}
+
 export default function ManagerDashboard() {
   const { session, loading: authLoading } = useAuth();
   const insets = useSafeAreaInsets();
@@ -120,8 +148,12 @@ export default function ManagerDashboard() {
     setFormError(null);
 
     try {
-      const ext = Platform.OS === 'web' ? 'jpeg' : (pickedUri.split('.').pop() ?? 'jpeg');
-      const path = `${session.user.id}/${Date.now()}.${ext}`;
+      const ext = Platform.OS === 'web' ? 'jpg' : safeExtension(pickedUri);
+      const contentType = ALLOWED_UPLOAD_TYPES[ext];
+      // First path segment is the owner's user id. The storage RLS policy keys
+      // on exactly that segment, so a manager can only write inside their own
+      // folder and can never overwrite another shop's images.
+      const path = `${session.user.id}/${randomObjectName(ext)}`;
 
       let uploadData: Blob | ArrayBuffer;
       if (Platform.OS === 'web') {
@@ -139,7 +171,13 @@ export default function ManagerDashboard() {
 
       const { error: uploadErr } = await supabase.storage
         .from('tattoo-images')
-        .upload(path, uploadData, { contentType: 'image/jpeg' });
+        .upload(path, uploadData, {
+          contentType,
+          // Never replace an existing object; the random name makes a collision
+          // essentially impossible, and refusing overwrite removes a whole
+          // class of "replace someone else's image" bugs.
+          upsert: false,
+        });
       if (uploadErr) throw uploadErr;
 
       const { data: urlData } = supabase.storage
@@ -162,8 +200,11 @@ export default function ManagerDashboard() {
 
       setTattoos((prev) => [newTattoo as DbTattoo, ...prev]);
       resetForm();
-    } catch (e) {
-      setFormError(e instanceof Error ? e.message : 'Upload failed.');
+    } catch {
+      // Supabase storage/postgrest errors name the bucket, the policy that
+      // rejected the write, and sometimes the row — none of which belongs on a
+      // user-facing screen.
+      setFormError('Upload failed. Please check your connection and try again.');
     } finally {
       setUploading(false);
     }
@@ -194,7 +235,7 @@ export default function ManagerDashboard() {
         </View>
         <View style={styles.rowActions}>
           <Pressable
-            onPress={() => console.log('Edit:', item.id)}
+            onPress={() => setFormError('Editing is not available yet.')}
             style={({ pressed }: { pressed: boolean }) => [
               styles.editBtn,
               { opacity: pressed ? 0.7 : 1 },

@@ -13,6 +13,17 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppTheme, Fonts } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 
+// Supabase distinguishes "wrong password" from "no such user" from "email not
+// confirmed". Surfacing that difference lets anyone probe which email addresses
+// have manager accounts, so every failure is collapsed into one message. The
+// only exception is rate limiting, which the user needs to understand to retry.
+function loginErrorMessage(status: number | undefined, code: string | undefined): string {
+  if (status === 429 || code === 'over_request_rate_limit') {
+    return 'Too many sign-in attempts. Please wait a minute and try again.';
+  }
+  return 'Incorrect email or password.';
+}
+
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -36,13 +47,15 @@ export default function LoginScreen() {
       });
 
       if (error) {
-        setErrorMsg(error.message);
+        setErrorMsg(loginErrorMessage(error.status, error.code));
         return;
       }
 
       router.replace('/manager');
-    } catch (e: unknown) {
-      setErrorMsg(e instanceof Error ? e.message : 'An unexpected error occurred.');
+    } catch {
+      // Never surface the raw exception: it can contain the request URL, the
+      // submitted email, and response headers.
+      setErrorMsg('Could not sign in right now. Please try again.');
     } finally {
       setLoading(false);
     }

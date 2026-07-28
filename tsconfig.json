@@ -13,5 +13,13 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    // Deno runtime, not React Native: it uses URL imports and the Deno global,
+    // which this Expo project cannot resolve. Type-checking it here produced
+    // four errors that made `tsc --noEmit` useless as a CI gate.
+    "supabase/functions"
   ]
 }
