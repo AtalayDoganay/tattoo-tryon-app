@@ -275,17 +275,11 @@ export default function HomeScreen() {
           </Pressable>
         </View>
 
-        {/* AI background removal banner */}
-        <Pressable
-          onPress={() => router.push('/removebg')}
-          style={({ pressed }: { pressed: boolean }) => [
-            styles.aiBanner,
-            { opacity: pressed ? 0.85 : 1 },
-          ]}
-        >
-          <Text style={styles.aiBannerText}>✨ Remove tattoo backgrounds — Free AI tool</Text>
-          <Text style={styles.aiBannerCta}>TRY IT →</Text>
-        </Pressable>
+        {/* The AI background-removal banner used to sit here. It is removed
+            while the processing service is offline: advertising a "Free AI
+            tool" that cannot run is worse than not offering it. The /removebg
+            route still exists and explains the situation to anyone who reaches
+            it by an old link. Restore this banner when the backend returns. */}
 
         {shopRows.map((row, rowIdx) => (
           <View key={rowIdx} style={styles.cardRow}>
@@ -640,31 +634,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: 'center',
     marginTop: 48,
-  },
-  // ── AI Banner ──
-  aiBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#111009',
-    borderWidth: 1,
-    borderColor: AppTheme.border,
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 16,
-  },
-  aiBannerText: {
-    fontSize: 13,
-    fontFamily: Fonts?.sans ?? 'system-ui',
-    color: AppTheme.text,
-    flex: 1,
-  },
-  aiBannerCta: {
-    fontSize: 13,
-    fontFamily: Fonts?.sans ?? 'system-ui',
-    color: AppTheme.accent,
-    fontWeight: '700',
-    marginLeft: 8,
   },
   // ── Footer ──
   footer: {

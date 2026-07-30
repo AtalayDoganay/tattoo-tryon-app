@@ -7,7 +7,28 @@ Supabase has its own document: [`SUPABASE_SECURITY_CHECKLIST.md`](../SUPABASE_SE
 
 ---
 
-## 1. Railway — background-removal API
+> ## ⚠️ Current state: section 1 is NOT deployed
+>
+> **The background-removal API is not running.** Its Railway host answers
+> `404 Application not found` (`x-railway-fallback: true`), meaning no
+> application is bound to that domain.
+>
+> Because of that, the feature is **deliberately disabled in the app**: the
+> home-screen entry point is removed and `/removebg` shows
+> "Background removal is temporarily unavailable." without contacting any
+> backend. See the top of [`README.md`](../README.md).
+>
+> Everything in section 1 below therefore describes the **target** configuration
+> to apply when the service is redeployed — none of it is currently in effect,
+> and none of it has been verified against a live service. Do not treat section 1
+> as passing.
+>
+> The rest of this document (Vercel, Supabase, and the app-level controls) **is**
+> live and verified.
+
+---
+
+## 1. Railway — background-removal API *(not currently deployed — see note above)*
 
 ### 1.1 Environment variables
 
