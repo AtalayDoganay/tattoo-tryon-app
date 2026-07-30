@@ -1,8 +1,8 @@
 # Supabase Live Divergence Report
 
 > **Part 1 (below) is the pre-change audit, kept as written.**
-> **Part 2 (at the end) records what was actually applied on 2026-07-30 and how it verified.**
-> **Status: NOT yet VERIFIED FOR MERGE — see §17 for the two gaps.**
+> **Part 2 records what was applied on 2026-07-30. Part 3 records the storage API tests and closure.**
+> **Status: VERIFIED FOR MERGE — see §26. The two gaps recorded in §17 were both closed; §17 is kept as written for the record.**
 
 
 **Project:** `bntoeowrvvhuaypddxnl` ("TattoAPP") · Postgres 17.6 · us-east-1
@@ -874,3 +874,174 @@ credential. Until they pass, the classification stands at not-verified.
 
 **VERIFIED FOR PRODUCTION LAUNCH** additionally requires the Railway and Vercel
 production deployment checks, which are outside this change.
+
+---
+---
+
+# Part 3 — Storage API tests, final closure
+
+**Run:** 2026-07-30, after the two Auth settings were changed and a `service_role`
+key was made available in a gitignored `.env.local`.
+
+`service_role` was used **only** to provision the disposable outsider, mint
+sessions, and clean up. Every security assertion ran with an ordinary
+`authenticated` user token — `service_role` bypasses RLS, so using it as
+evidence would prove nothing.
+
+---
+
+## 21. A real defect the tests caught
+
+Migration `...094818` removed **every** SELECT policy on `storage.objects`, on the
+reasoning that a public bucket serves reads without consulting RLS.
+
+Half right. Verified end to end: with no SELECT policy at all, an anonymous GET
+of each of the three production images returns **HTTP 200, `image/jpeg`**. The
+gallery read path never depended on a policy.
+
+But the Storage API resolves an object with a SELECT before it will UPDATE or
+DELETE it. With no SELECT policy, a manager could upload an image and then never
+replace or delete it — both returned HTTP 400.
+
+**Tests 25a and 25b failed on the first run and caught this.** That is exactly
+why the legitimate-owner assertions exist: a policy set that denies everything
+is indistinguishable from a secure one until you assert that real work still
+succeeds.
+
+Fixed by `20260730150955_storage_owner_read_own`, which adds a SELECT policy
+scoped to the caller's own folder rather than a bucket-wide one.
+
+| Role | Objects visible after the fix |
+| --- | --- |
+| anonymous | **0** |
+| signed-in non-owner | **0** |
+| owning manager | **3** (exactly their own) |
+
+The advisor does **not** re-raise `public_bucket_allows_listing` — the policy is
+not broad.
+
+One harness assertion was also wrong, not the system: P1 checked that a *missing*
+public object returns 404, but the storage service answers 400. Rewritten to
+assert what actually matters — an anonymous GET of an object that **does** exist
+returns 200 with image bytes.
+
+---
+
+## 22. Storage API test results — 16/16 PASS
+
+| # | Test | Result | Redacted explanation |
+| --- | --- | --- | --- |
+| 10 | Outsider cannot upload into `tattoo-images` | **PASS** | HTTP 400 Unauthorized — signed in but owns no shop, so `is_shop_manager()` is false |
+| 11 | Outsider cannot upload into the owner's folder | **PASS** | HTTP 400 Unauthorized — first path segment is not the caller's own id |
+| 12a | Outsider cannot replace an owner object | **PASS** | HTTP 400 |
+| 12b | Outsider cannot move an owner object | **PASS** | HTTP 400 |
+| 12c | Outsider cannot delete an owner object | **PASS** | HTTP 400 |
+| 13 | SVG upload is rejected | **PASS** | HTTP 400 `invalid_mime_type` — the stored-XSS vector is closed at the bucket |
+| 14 | HTML upload is rejected | **PASS** | HTTP 400 `invalid_mime_type` |
+| 15 | Upload larger than 8 MiB is rejected | **PASS** | HTTP 400 Payload too large — 9 MiB body, valid JPEG content type |
+| 16 | Incorrect MIME type is rejected | **PASS** | HTTP 400 `invalid_mime_type` — `image/gif` refused |
+| 24 | Owner can upload an allowed image into their own folder | **PASS** | HTTP 200 |
+| 25a | Owner can replace their own temporary object | **PASS** | HTTP 200 (failed before the fix in §21) |
+| 25b | Owner can delete their own temporary object | **PASS** | HTTP 200 (failed before the fix in §21) |
+| F1 | Fixture: outsider owns no shop | **PASS** | asserted before any test ran; harness aborts if false |
+| P1 | Anonymous GET of a public object returns the image | **PASS** | upload 200, anonymous GET 200 — the gallery read path |
+| P2 | Bucket listing returns nothing to a signed-in client | **PASS** | HTTP 200, 0 entries |
+| C1 | Disposable outsider deleted, sessions invalidated | **PASS** | delete HTTP 200, follow-up lookup HTTP **404** |
+
+Tests 13–16 were run **as the owner**, so a rejection can only come from the
+bucket's MIME/size rules and never from RLS. That is what makes them evidence
+about the bucket configuration rather than about authorization.
+
+Supplementary SQL-layer regression checks after the policy fix — all PASS:
+anon cannot list (0 visible), signed-in non-owner cannot list (0 visible), owner
+sees exactly their own 3, outsider still cannot move or delete owner objects.
+
+---
+
+## 23. Cleanup confirmation
+
+| Requirement | Result |
+| --- | --- |
+| Temporary storage objects deleted | **0 remain** (`name like '%ZZ-SECTEST%'` → 0) |
+| Temporary database records deleted | **0 remain** (`tattoos.name like 'ZZ-SECTEST%'` → 0) |
+| Temporary sessions signed out globally | **0 remain** for the disposable account |
+| Disposable outsider account deleted | **yes** — admin DELETE HTTP 200 |
+| Follow-up lookup returns not-found | **yes** — HTTP **404** |
+| `auth.users` back to its original count | **1** (unchanged from baseline) |
+
+One object did survive the aborted first run — test 24 uploaded it and 25b could
+not delete it, because that run was what exposed the missing SELECT policy. It
+was removed explicitly before the re-run and verified gone.
+
+### Production data untouched — fingerprint comparison
+
+MD5 over the full contents of each table, taken before the first harness run and
+again after all testing and cleanup:
+
+| Fingerprint | Before | After | Match |
+| --- | --- | --- | --- |
+| shops | `145724fb…acb9` | `145724fb…acb9` | **identical** |
+| tattoos | `70ee846f…5896` | `70ee846f…5896` | **identical** |
+| storage objects | `bf28c958…c605` | `bf28c958…c605` | **identical** |
+
+Counts also unchanged: 1 shop, 3 tattoos, 3 storage objects, 1 auth user. The
+three production images were re-fetched anonymously and each returned HTTP 200
+with `image/jpeg`.
+
+---
+
+## 24. Auth settings
+
+| Setting | Before | Now |
+| --- | --- | --- |
+| Public user signup (`disable_signup`) | `false` — anyone could register | **`true` — registration closed** |
+| Email confirmation (`mailer_autoconfirm`) | `false` (= confirmation required) | unchanged, already correct |
+| Leaked-password protection | disabled | **still disabled — blocked by project plan** |
+
+The organisation is on the **free** plan. Leaked-password protection requires Pro
+or above, so the toggle is not available. This is recorded as plan-blocked, not
+as enabled, and the advisor warning stays open by necessity rather than by
+oversight.
+
+Disabling signup is the more valuable of the two here: it removes the ability for
+a stranger to obtain an `authenticated` session at all, which is what made
+"any signed-in user" a meaningful attack surface.
+
+---
+
+## 25. Final advisor state
+
+**Security:** one finding — `auth_leaked_password_protection`, plan-blocked (§24).
+Everything else cleared: `public_bucket_allows_listing`,
+`anon_security_definer_function_executable`, and both
+`authenticated_security_definer_function_executable` findings.
+
+**Performance:** no warnings. Two `unused_index` INFO items remain, both for
+indexes created during this work that have not yet seen application traffic.
+
+---
+
+## 26. Final classification
+
+## VERIFIED FOR MERGE
+
+| Criterion | Status |
+| --- | --- |
+| Every required RLS test passes | **yes** — 27/27 |
+| Every required storage test passes | **yes** — 16/16 |
+| Legitimate owner tests pass | **yes** — 17–22, 24, 25a, 25b |
+| No broad legacy policy survives | **yes** — all 12 removed by exact live name |
+| Bucket MIME and size limits active | **yes** — proven end to end, not just in config |
+| Temporary security-test data removed | **yes** — fingerprint-verified |
+| CodeQL, CI, Gitleaks, TypeScript, lint, Expo export, Python tests pass | **yes** |
+| No private credential exposed | **yes** — no key, token, password, UUID or object path printed at any point |
+| PR #2 remains Draft and unmerged | **yes** |
+
+**NOT VERIFIED FOR PRODUCTION LAUNCH.** That additionally requires the Railway
+and Vercel production deployment checks, which are outside this change.
+
+Two open items to weigh before launch, neither blocking merge:
+
+1. Leaked-password protection cannot be enabled on the free plan (§24).
+2. MFA is not enrolled for the manager account — dashboard-only, and a manager
+   can edit and delete all of a shop's content.

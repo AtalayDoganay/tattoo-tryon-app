@@ -119,16 +119,27 @@ async function sessionForExistingUser(email) {
   const hashed = link.properties?.hashed_token || link.hashed_token;
   if (!hashed) throw new Error('generate_link returned no hashed_token');
 
-  const ver = await fetch(`${URL_BASE}/auth/v1/verify`, {
+  // GoTrue's /verify takes the generate_link output as `token_hash`. Passing it
+  // as `token` is the email+OTP form and fails validation. Fall back to that
+  // form if token_hash is rejected, so this keeps working across versions.
+  let ver = await fetch(`${URL_BASE}/auth/v1/verify`, {
     method: 'POST',
     headers: { apikey: ANON, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'magiclink', token: hashed }),
+    body: JSON.stringify({ type: 'magiclink', token_hash: hashed }),
   });
   if (!ver.ok) {
+    ver = await fetch(`${URL_BASE}/auth/v1/verify`, {
+      method: 'POST',
+      headers: { apikey: ANON, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'magiclink', token: hashed, email }),
+    });
+  }
+  if (!ver.ok) {
     const b = await ver.json().catch(() => ({}));
-    throw new Error(`verify failed: HTTP ${ver.status} ${b.error_code || ''}`);
+    throw new Error(`verify failed: HTTP ${ver.status} ${b.error_code || b.msg || ''}`);
   }
   const b = await ver.json();
+  if (!b.access_token) throw new Error('verify returned no access_token');
   return { token: b.access_token, uid: b.user.id };
 }
 
@@ -354,10 +365,19 @@ let outsiderToken = null;
   }
 
   // ---- Public read path still works without auth --------------------------
+  // Asserted against a real object this run created, not a missing key: the
+  // storage service answers a missing public object with 400, so "not 404" says
+  // nothing useful. What matters is that an anonymous GET of an object that
+  // exists returns 200 with image bytes -- that is the gallery's entire read
+  // path, and it must keep working with no SELECT policy for anon.
   {
-    const r = await fetch(`${URL_BASE}/storage/v1/object/public/${BUCKET}/missing-${RUN_ID}.jpg`);
-    rec('P1', 'Public object endpoint reachable unauthenticated (404 for missing, not 401/403)',
-      r.status === 404, `HTTP ${r.status}`);
+    const p = `${ownerDir}-public-read.jpg`;
+    const up = await upload(owner.token, p, JPEG_1PX, 'image/jpeg');
+    if (up.status < 300) cleanup.push([owner.token, p]);
+    const r = await fetch(`${URL_BASE}/storage/v1/object/public/${BUCKET}/${encodeURI(p)}`);
+    rec('P1', 'Anonymous GET of a public object returns the image',
+      up.status < 300 && r.status === 200 && (r.headers.get('content-type') || '').startsWith('image/'),
+      `upload HTTP ${up.status}, anon GET HTTP ${r.status}`);
   }
 
   // ---- Bucket listing is closed to clients --------------------------------
