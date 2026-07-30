@@ -1,5 +1,5 @@
 -- =============================================================================
--- 20260730090002_storage_policies.sql
+-- 20260730094818_storage_policies.sql
 -- Access control for the public `tattoo-images` bucket.
 --
 -- Written against the LIVE configuration of project bntoeowrvvhuaypddxnl,
@@ -66,7 +66,7 @@ begin
 
   -- Proves migration ...0001 ran first.
   if to_regprocedure('public.owns_shop(uuid)') is null then
-    raise exception 'precondition failed: public.owns_shop(uuid) is missing -- apply 20260730090001_rls_core.sql first';
+    raise exception 'precondition failed: public.owns_shop(uuid) is missing -- apply 20260730094727_rls_core.sql first';
   end if;
 
   if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace

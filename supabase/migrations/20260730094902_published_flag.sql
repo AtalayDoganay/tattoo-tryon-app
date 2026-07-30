@@ -1,12 +1,12 @@
 -- =============================================================================
--- 20260730090003_published_flag.sql
+-- 20260730094902_published_flag.sql
 -- Draft / published workflow for public.tattoos.
 --
 -- Supersedes the draft 20260728000003_optional_published_flag.sql. That file was
 -- marked OPTIONAL because the feature had not been decided on; it has now been
 -- approved, so this is a deliberate production migration and no longer optional.
 --
--- REQUIRES 20260730090001_rls_core.sql (for public.owns_shop).
+-- REQUIRES 20260730094727_rls_core.sql (for public.owns_shop).
 --
 -- THE ASYMMETRY IS INTENTIONAL
 -- ----------------------------
@@ -35,7 +35,7 @@ begin
     raise exception 'precondition failed: table public.tattoos does not exist';
   end if;
   if to_regprocedure('public.owns_shop(uuid)') is null then
-    raise exception 'precondition failed: public.owns_shop(uuid) is missing -- apply 20260730090001_rls_core.sql first';
+    raise exception 'precondition failed: public.owns_shop(uuid) is missing -- apply 20260730094727_rls_core.sql first';
   end if;
   if not (select relrowsecurity from pg_class where oid = 'public.tattoos'::regclass) then
     raise exception 'precondition failed: RLS is not enabled on public.tattoos';
@@ -44,7 +44,7 @@ begin
   if not exists (select 1 from pg_policies
                  where schemaname = 'public' and tablename = 'tattoos'
                    and policyname = 'tattoos: public read') then
-    raise exception 'precondition failed: policy "tattoos: public read" is missing -- apply 20260730090001_rls_core.sql first';
+    raise exception 'precondition failed: policy "tattoos: public read" is missing -- apply 20260730094727_rls_core.sql first';
   end if;
 end $$;
 

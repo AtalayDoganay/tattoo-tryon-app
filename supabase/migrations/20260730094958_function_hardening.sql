@@ -1,5 +1,5 @@
 -- =============================================================================
--- 20260730090004_function_hardening.sql
+-- 20260730094958_function_hardening.sql
 -- Least-privilege EXECUTE on SECURITY DEFINER functions.
 --
 -- FULL INVENTORY (all schemas except pg_catalog / information_schema, read
@@ -62,10 +62,10 @@ begin
     raise exception 'precondition failed: event trigger ensure_rls does not exist; refusing to change privileges on a function whose purpose cannot be confirmed';
   end if;
   if to_regprocedure('public.owns_shop(uuid)') is null then
-    raise exception 'precondition failed: public.owns_shop(uuid) is missing -- apply 20260730090001_rls_core.sql first';
+    raise exception 'precondition failed: public.owns_shop(uuid) is missing -- apply 20260730094727_rls_core.sql first';
   end if;
   if to_regprocedure('public.is_shop_manager()') is null then
-    raise exception 'precondition failed: public.is_shop_manager() is missing -- apply 20260730090002_storage_policies.sql first';
+    raise exception 'precondition failed: public.is_shop_manager() is missing -- apply 20260730094818_storage_policies.sql first';
   end if;
 end $$;
 

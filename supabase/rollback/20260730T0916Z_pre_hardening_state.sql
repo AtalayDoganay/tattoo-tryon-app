@@ -65,14 +65,19 @@
 
 begin;
 
--- Remove the hardened policies.
-drop policy if exists "shops: public read"      on public.shops;
-drop policy if exists "shops: owner update"     on public.shops;
-drop policy if exists "tattoos: public read"    on public.tattoos;
-drop policy if exists "tattoos: owner read drafts" on public.tattoos;
-drop policy if exists "tattoos: owner insert"   on public.tattoos;
-drop policy if exists "tattoos: owner update"   on public.tattoos;
-drop policy if exists "tattoos: owner delete"   on public.tattoos;
+-- Remove the hardened policies. Covers every name any of the six applied
+-- migrations created, including the intermediate read-policy names that
+-- ...100217 replaced, so this works whichever migration you rolled back to.
+drop policy if exists "shops: public read"           on public.shops;
+drop policy if exists "shops: owner update"          on public.shops;
+drop policy if exists "tattoos: public read"         on public.tattoos;
+drop policy if exists "tattoos: published read"      on public.tattoos;
+drop policy if exists "tattoos: owner read drafts"   on public.tattoos;
+drop policy if exists "tattoos: anon read published" on public.tattoos;
+drop policy if exists "tattoos: authenticated read"  on public.tattoos;
+drop policy if exists "tattoos: owner insert"        on public.tattoos;
+drop policy if exists "tattoos: owner update"        on public.tattoos;
+drop policy if exists "tattoos: owner delete"        on public.tattoos;
 
 -- FORCE was added by the hardening migration; it was OFF before.
 alter table public.shops   no force row level security;
@@ -126,8 +131,18 @@ grant insert, select, update, delete, truncate, references, trigger, maintain
 grant truncate, references, trigger, maintain
   on public.shops, public.tattoos to service_role;
 
--- The helper function did not exist before migration 0001.
+-- Neither helper existed before the hardening migrations. They live in the
+-- `private` schema after ...100013; the public.* forms are listed too in case
+-- you rolled back to a point before that move.
+drop function if exists private.owns_shop(uuid);
+drop function if exists private.is_shop_manager();
 drop function if exists public.owns_shop(uuid);
+drop function if exists public.is_shop_manager();
+drop schema if exists private;
+
+-- Index added by ...100217. Dropping it is optional -- it is a pure
+-- performance aid and removing it loses nothing but speed.
+drop index if exists public.shops_owner_user_id_idx;
 
 commit;
 
@@ -193,7 +208,7 @@ commit;
 --     and only after Section B has restored the permissive read policy.
 --
 --     alter table public.tattoos drop column if exists published;
---     drop index if exists public.tattoos_published_idx;
+--     drop index if exists public.tattoos_published_shop_created_idx;
 --
 -- D3. NOT ROLLED BACK: the duplicate storage.objects grants made by
 --     supabase_storage_admin cannot be reproduced from a postgres session

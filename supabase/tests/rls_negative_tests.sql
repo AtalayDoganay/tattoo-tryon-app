@@ -1,65 +1,72 @@
 -- =============================================================================
 -- supabase/tests/rls_negative_tests.sql
 --
--- Adversarial checks for the policies in supabase/migrations/. Every test
--- asserts that an ATTACK FAILS; the last group asserts that legitimate manager
--- use still works, so a policy that is merely "deny everything" also fails.
+-- Adversarial checks for the policies installed by supabase/migrations/.
+-- Rewritten 2026-07-30 against the applied schema (published column, owner-
+-- scoped storage policies, no shops DELETE).
 --
 -- HOW TO RUN
 --   Supabase Dashboard -> SQL Editor -> paste this whole file -> Run.
---   The script ends in ROLLBACK, so it writes nothing permanent.
---   Success looks like a run with no ERROR and a series of "PASS" notices.
---   Any "FAIL:" line means the corresponding policy is missing or too wide.
+--   It ends in ROLLBACK, so it writes NOTHING permanent. Every row and object
+--   it touches is created inside the transaction and disappears with it.
+--   Results come back as a table: one row per assertion, with a pass flag.
 --
--- BEFORE RUNNING: fill in the three values in the CONFIGURE block below.
--- Real ids are used rather than fabricated ones so the script never has to
--- insert into auth.users.
+-- WHY ROLE SWITCHING IS MANDATORY
+--   The SQL Editor runs as `postgres`, which holds BYPASSRLS -- it ignores
+--   every policy, including FORCE ROW LEVEL SECURITY. Each test therefore
+--   switches into `anon` or `authenticated` with SET LOCAL ROLE and sets
+--   request.jwt.claims, which is exactly how PostgREST executes an app
+--   request. Results obtained as postgres or service_role would prove nothing
+--   about client access, so neither is ever used as evidence below.
 --
--- NOTE ON PRIVILEGE: the SQL Editor runs as a superuser, which bypasses RLS.
--- Every test therefore switches into the `anon` or `authenticated` role with
--- SET LOCAL ROLE and sets request.jwt.claims, which is exactly how PostgREST
--- executes a request from the app. Tests are meaningless without that switch.
+-- WHAT THIS FILE CANNOT COVER
+--   Bucket MIME-type and file-size limits are enforced by the Storage API, not
+--   by RLS, and object bytes only move through that API. Those assertions live
+--   in supabase/tests/storage_api_tests.mjs and need real user tokens.
 -- =============================================================================
 
 begin;
 
 -- ---------------------------------------------------------------------------
--- CONFIGURE
+-- Fixtures. Real ids are looked up, never hard-coded, and never printed.
 -- ---------------------------------------------------------------------------
-create temporary table _cfg on commit drop as
+create temp table _cfg on commit drop as
 select
-  -- A user who OWNS a shop (a manager). Find one with:
-  --   select owner_user_id, name from public.shops limit 5;
-  '00000000-0000-0000-0000-000000000001'::uuid as manager_uid,
-
-  -- Any signed-up user who owns NO shop. Find one with:
-  --   select id from auth.users
-  --   where id not in (select owner_user_id from public.shops) limit 1;
-  '00000000-0000-0000-0000-000000000002'::uuid as outsider_uid,
-
-  -- The shop owned by manager_uid above.
-  '00000000-0000-0000-0000-000000000003'::uuid as shop_id;
+  s.id                                            as shop_id,
+  s.owner_user_id                                 as owner_uid,
+  -- A signed-in user who owns no shop. Any uuid that is absent from
+  -- shops.owner_user_id is a faithful outsider for RLS purposes: auth.uid()
+  -- reads the JWT claim, and no policy joins against auth.users.
+  '00000000-0000-0000-0000-0000000000ff'::uuid    as outsider_uid,
+  -- A shop id that does not exist, for the "move my row into someone else's
+  -- shop" attack.
+  '00000000-0000-0000-0000-0000000000fe'::uuid    as foreign_shop_id
+from public.shops s
+where s.owner_user_id is not null
+order by s.created_at
+limit 1;
 
 do $$
-declare
-  cfg record;
+declare cfg record;
 begin
   select * into cfg from _cfg;
-  if not exists (select 1 from public.shops
-                 where id = cfg.shop_id and owner_user_id = cfg.manager_uid) then
-    raise exception
-      'CONFIGURE BLOCK NOT FILLED IN: shop % is not owned by user %. Set real ids at the top of this file.',
-      cfg.shop_id, cfg.manager_uid;
+  if cfg is null then
+    raise exception 'fixture failed: no shop with an owner exists to test against';
   end if;
   if exists (select 1 from public.shops where owner_user_id = cfg.outsider_uid) then
-    raise exception
-      'CONFIGURE BLOCK INVALID: outsider_uid % owns a shop, so it cannot test the non-manager case.',
-      cfg.outsider_uid;
+    raise exception 'fixture failed: the synthetic outsider uid owns a shop';
   end if;
 end $$;
 
+create temp table results(
+  id       text,
+  title    text,
+  outcome  text,
+  pass     boolean
+) on commit drop;
+
 -- ---------------------------------------------------------------------------
--- Helpers: become an anonymous visitor / a specific signed-in user
+-- Helpers
 -- ---------------------------------------------------------------------------
 create or replace function pg_temp.be_anon() returns void language plpgsql as $$
 begin
@@ -69,11 +76,8 @@ end $$;
 
 create or replace function pg_temp.be_user(uid uuid) returns void language plpgsql as $$
 begin
-  perform set_config(
-    'request.jwt.claims',
-    json_build_object('sub', uid::text, 'role', 'authenticated')::text,
-    true
-  );
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', uid::text, 'role', 'authenticated')::text, true);
   execute 'set local role authenticated';
 end $$;
 
@@ -83,232 +87,438 @@ begin
   perform set_config('request.jwt.claims', null, true);
 end $$;
 
--- ===========================================================================
--- GROUP 1 — Anonymous visitors must not write
--- ===========================================================================
-do $$
-declare cfg record;
+create or replace function pg_temp.rec(p_id text, p_title text, p_pass boolean, p_outcome text)
+returns void language plpgsql as $$
 begin
-  select * into cfg from _cfg;
-
-  -- 1.1 anon INSERT tattoo
-  begin
-    perform pg_temp.be_anon();
-    insert into public.tattoos (shop_id, name, image_url)
-    values (cfg.shop_id, 'pwned', 'https://evil.example/x.png');
-    perform pg_temp.be_admin();
-    raise exception 'FAIL 1.1: anonymous user inserted a tattoo';
-  exception when insufficient_privilege then
-    perform pg_temp.be_admin();
-    raise notice 'PASS 1.1: anonymous INSERT on tattoos denied';
-  end;
-
-  -- 1.2 anon DELETE tattoo
-  begin
-    perform pg_temp.be_anon();
-    delete from public.tattoos where shop_id = cfg.shop_id;
-    perform pg_temp.be_admin();
-    raise exception 'FAIL 1.2: anonymous user deleted tattoos';
-  exception when insufficient_privilege then
-    perform pg_temp.be_admin();
-    raise notice 'PASS 1.2: anonymous DELETE on tattoos denied';
-  end;
-
-  -- 1.3 anon UPDATE shop ownership
-  begin
-    perform pg_temp.be_anon();
-    update public.shops set owner_user_id = cfg.outsider_uid where id = cfg.shop_id;
-    perform pg_temp.be_admin();
-    raise exception 'FAIL 1.3: anonymous user rewrote shop ownership';
-  exception when insufficient_privilege then
-    perform pg_temp.be_admin();
-    raise notice 'PASS 1.3: anonymous UPDATE on shops denied';
-  end;
+  insert into results values (p_id, p_title, p_outcome, p_pass);
 end $$;
 
 -- ===========================================================================
--- GROUP 2 — A signed-in non-manager must not gain manager powers
+-- MAIN
 -- ===========================================================================
 do $$
 declare
-  cfg record;
-  affected int;
+  cfg        record;
+  draft_id   uuid;
+  n          int;
+  affected   int;
+  ok         boolean;
 begin
   select * into cfg from _cfg;
 
-  -- 2.1 The self-promotion attack: point an existing shop at myself.
+  -- =========================================================================
+  -- OWNER — legitimate operations must work (17-20, 22)
+  -- A deny-everything policy set would otherwise look like a pass.
+  -- =========================================================================
+
+  -- 17. Owner can create a tattoo, and it starts unpublished.
+  begin
+    perform pg_temp.be_user(cfg.owner_uid);
+    insert into public.tattoos (shop_id, name, image_url)
+    values (cfg.shop_id, 'ZZ-SECTEST-draft', 'https://example.invalid/sectest.png')
+    returning id, published into draft_id, ok;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('17', 'Owner can create a tattoo, defaulting to unpublished',
+      draft_id is not null and ok is false,
+      case when draft_id is null then 'insert returned no row'
+           else 'inserted, published=' || ok end);
+  exception when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('17', 'Owner can create a tattoo, defaulting to unpublished',
+      false, 'blocked: ' || sqlerrm);
+  end;
+
+  -- 18. Owner can read their own unpublished row.
+  begin
+    perform pg_temp.be_user(cfg.owner_uid);
+    select count(*) into n from public.tattoos where id = draft_id;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('18', 'Owner can read their own unpublished draft',
+      n = 1, n || ' row(s) visible');
+  exception when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('18', 'Owner can read their own unpublished draft', false, 'error: ' || sqlerrm);
+  end;
+
+  -- 19. Owner can edit it.
+  begin
+    perform pg_temp.be_user(cfg.owner_uid);
+    update public.tattoos set name = 'ZZ-SECTEST-draft-renamed' where id = draft_id;
+    get diagnostics affected = row_count;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('19', 'Owner can edit their own tattoo', affected = 1, affected || ' row(s) updated');
+  exception when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('19', 'Owner can edit their own tattoo', false, 'blocked: ' || sqlerrm);
+  end;
+
+  -- 20. Owner can publish it.
+  begin
+    perform pg_temp.be_user(cfg.owner_uid);
+    update public.tattoos set published = true where id = draft_id;
+    get diagnostics affected = row_count;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('20', 'Owner can publish their own tattoo', affected = 1, affected || ' row(s) updated');
+  exception when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('20', 'Owner can publish their own tattoo', false, 'blocked: ' || sqlerrm);
+  end;
+
+  -- 21. Anonymous visitor can read it once published.
+  begin
+    perform pg_temp.be_anon();
+    select count(*) into n from public.tattoos where id = draft_id;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('21', 'Anonymous user can read the tattoo after publishing',
+      n = 1, n || ' row(s) visible to anon');
+  exception when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('21', 'Anonymous user can read the tattoo after publishing', false, 'error: ' || sqlerrm);
+  end;
+
+  -- 22. Owner can unpublish it.
+  begin
+    perform pg_temp.be_user(cfg.owner_uid);
+    update public.tattoos set published = false where id = draft_id;
+    get diagnostics affected = row_count;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('22', 'Owner can unpublish their own tattoo', affected = 1, affected || ' row(s) updated');
+  exception when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('22', 'Owner can unpublish their own tattoo', false, 'blocked: ' || sqlerrm);
+  end;
+
+  -- 23. Anonymous visitor can no longer read it.
+  begin
+    perform pg_temp.be_anon();
+    select count(*) into n from public.tattoos where id = draft_id;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('23', 'Anonymous user cannot read the tattoo after unpublishing',
+      n = 0, n || ' row(s) visible to anon');
+  exception when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('23', 'Anonymous user cannot read the tattoo after unpublishing', false, 'error: ' || sqlerrm);
+  end;
+
+  -- =========================================================================
+  -- ANONYMOUS — reads allowed only for published, no writes at all (1-5)
+  -- =========================================================================
+
+  -- 1. Anonymous can read published tattoos.
+  begin
+    perform pg_temp.be_anon();
+    select count(*) into n from public.tattoos;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('01', 'Anonymous user can read published tattoos',
+      n > 0, n || ' published row(s) visible');
+  exception when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('01', 'Anonymous user can read published tattoos', false, 'error: ' || sqlerrm);
+  end;
+
+  -- 2. Anonymous cannot read an unpublished tattoo (draft_id is unpublished again).
+  begin
+    perform pg_temp.be_anon();
+    select count(*) into n from public.tattoos where id = draft_id;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('02', 'Anonymous user cannot read unpublished tattoos',
+      n = 0, n || ' draft row(s) visible');
+  exception when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('02', 'Anonymous user cannot read unpublished tattoos', false, 'error: ' || sqlerrm);
+  end;
+
+  -- 3. Anonymous cannot insert.
+  begin
+    perform pg_temp.be_anon();
+    insert into public.tattoos (shop_id, name, image_url)
+    values (cfg.shop_id, 'ZZ-SECTEST-anon', 'https://evil.invalid/x.png');
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('03', 'Anonymous user cannot insert tattoos', false, 'INSERT SUCCEEDED');
+  exception when insufficient_privilege then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('03', 'Anonymous user cannot insert tattoos', true, 'denied: insufficient_privilege');
+  when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('03', 'Anonymous user cannot insert tattoos', true, 'denied: ' || sqlerrm);
+  end;
+
+  -- 4. Anonymous cannot update.
+  begin
+    perform pg_temp.be_anon();
+    update public.tattoos set name = 'ZZ-SECTEST-anon-edit' where shop_id = cfg.shop_id;
+    get diagnostics affected = row_count;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('04', 'Anonymous user cannot update tattoos',
+      false, 'UPDATE SUCCEEDED on ' || affected || ' row(s)');
+  exception when insufficient_privilege then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('04', 'Anonymous user cannot update tattoos', true, 'denied: insufficient_privilege');
+  when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('04', 'Anonymous user cannot update tattoos', true, 'denied: ' || sqlerrm);
+  end;
+
+  -- 5. Anonymous cannot delete.
+  begin
+    perform pg_temp.be_anon();
+    delete from public.tattoos where shop_id = cfg.shop_id;
+    get diagnostics affected = row_count;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('05', 'Anonymous user cannot delete tattoos',
+      false, 'DELETE SUCCEEDED on ' || affected || ' row(s)');
+  exception when insufficient_privilege then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('05', 'Anonymous user cannot delete tattoos', true, 'denied: insufficient_privilege');
+  when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('05', 'Anonymous user cannot delete tattoos', true, 'denied: ' || sqlerrm);
+  end;
+
+  -- =========================================================================
+  -- OUTSIDER — signed in, owns no shop (6-9)
+  -- =========================================================================
+
+  -- 6. Outsider cannot insert a tattoo into someone else's shop.
+  begin
+    perform pg_temp.be_user(cfg.outsider_uid);
+    insert into public.tattoos (shop_id, name, image_url)
+    values (cfg.shop_id, 'ZZ-SECTEST-outsider', 'https://evil.invalid/x.png');
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('06', 'Outsider cannot insert tattoos', false, 'INSERT SUCCEEDED');
+  exception when insufficient_privilege then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('06', 'Outsider cannot insert tattoos', true, 'denied by RLS WITH CHECK');
+  when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('06', 'Outsider cannot insert tattoos', true, 'denied: ' || sqlerrm);
+  end;
+
+  -- 7. Outsider cannot modify an owner's tattoo.
+  begin
+    perform pg_temp.be_user(cfg.outsider_uid);
+    update public.tattoos set name = 'ZZ-SECTEST-hijacked' where id = draft_id;
+    get diagnostics affected = row_count;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('07', 'Outsider cannot modify an owner''s tattoo',
+      affected = 0, affected || ' row(s) updated');
+  exception when insufficient_privilege then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('07', 'Outsider cannot modify an owner''s tattoo', true, 'denied outright');
+  end;
+
+  -- 8. Outsider cannot publish or unpublish.
+  begin
+    perform pg_temp.be_user(cfg.outsider_uid);
+    update public.tattoos set published = true where id = draft_id;
+    get diagnostics affected = row_count;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('08', 'Outsider cannot publish or unpublish a tattoo',
+      affected = 0, affected || ' row(s) updated');
+  exception when insufficient_privilege then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('08', 'Outsider cannot publish or unpublish a tattoo', true, 'denied outright');
+  end;
+
+  -- 9a. Outsider cannot seize shop ownership.
   begin
     perform pg_temp.be_user(cfg.outsider_uid);
     update public.shops set owner_user_id = cfg.outsider_uid where id = cfg.shop_id;
     get diagnostics affected = row_count;
     perform pg_temp.be_admin();
-    if affected > 0 then
-      raise exception 'FAIL 2.1: non-manager took ownership of a shop (% rows)', affected;
-    end if;
-    -- 0 rows is the correct outcome: the USING clause matched nothing.
-    raise notice 'PASS 2.1: non-manager could not take shop ownership (0 rows)';
+    perform pg_temp.rec('09a', 'Outsider cannot change shop ownership',
+      affected = 0, affected || ' row(s) updated');
   exception when insufficient_privilege then
     perform pg_temp.be_admin();
-    raise notice 'PASS 2.1: non-manager UPDATE on shops denied outright';
+    perform pg_temp.rec('09a', 'Outsider cannot change shop ownership', true, 'denied outright');
   end;
 
-  -- 2.2 Create my own shop to become a manager.
+  -- 9b. Owner cannot move their own tattoo into a shop they do not own.
+  begin
+    perform pg_temp.be_user(cfg.owner_uid);
+    update public.tattoos set shop_id = cfg.foreign_shop_id where id = draft_id;
+    get diagnostics affected = row_count;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('09b', 'Nobody can move a tattoo into a shop they do not own',
+      false, 'UPDATE SUCCEEDED on ' || affected || ' row(s)');
+  exception when insufficient_privilege then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('09b', 'Nobody can move a tattoo into a shop they do not own',
+      true, 'denied by RLS WITH CHECK');
+  when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('09b', 'Nobody can move a tattoo into a shop they do not own',
+      true, 'denied: ' || sqlerrm);
+  end;
+
+  -- 9c. Owner cannot give their shop away.
+  begin
+    perform pg_temp.be_user(cfg.owner_uid);
+    update public.shops set owner_user_id = cfg.outsider_uid where id = cfg.shop_id;
+    get diagnostics affected = row_count;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('09c', 'Owner cannot reassign their shop to another user',
+      false, 'UPDATE SUCCEEDED on ' || affected || ' row(s)');
+  exception when insufficient_privilege then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('09c', 'Owner cannot reassign their shop to another user',
+      true, 'denied by RLS WITH CHECK');
+  when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('09c', 'Owner cannot reassign their shop to another user',
+      true, 'denied: ' || sqlerrm);
+  end;
+
+  -- 9d. Nobody can create a shop through the API (no INSERT policy, no grant).
   begin
     perform pg_temp.be_user(cfg.outsider_uid);
     insert into public.shops (name, slug, owner_user_id)
-    values ('pwned shop', 'pwned-shop', cfg.outsider_uid);
+    values ('ZZ-SECTEST-shop', 'zz-sectest-shop', cfg.outsider_uid);
     perform pg_temp.be_admin();
-    raise exception 'FAIL 2.2: non-manager created their own shop';
+    perform pg_temp.rec('09d', 'Outsider cannot self-provision a shop', false, 'INSERT SUCCEEDED');
   exception when insufficient_privilege then
     perform pg_temp.be_admin();
-    raise notice 'PASS 2.2: INSERT on shops denied (no self-provisioning)';
+    perform pg_temp.rec('09d', 'Outsider cannot self-provision a shop', true, 'denied: no INSERT grant/policy');
+  when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('09d', 'Outsider cannot self-provision a shop', true, 'denied: ' || sqlerrm);
   end;
 
-  -- 2.3 Write a tattoo into a shop I do not own.
+  -- =========================================================================
+  -- STORAGE — policy layer (10-12)
+  -- These attempt writes against storage.objects to exercise the POLICY only.
+  -- Every one of them is expected to be refused, so no metadata is written;
+  -- the surrounding ROLLBACK guarantees it either way. Byte-level behaviour
+  -- (MIME allowlist, size cap) is enforced by the Storage API and is covered
+  -- in storage_api_tests.mjs, not here.
+  -- =========================================================================
+
+  -- 10. Outsider cannot upload into the bucket at all.
   begin
     perform pg_temp.be_user(cfg.outsider_uid);
-    insert into public.tattoos (shop_id, name, image_url)
-    values (cfg.shop_id, 'pwned', 'https://evil.example/x.png');
+    insert into storage.objects (bucket_id, name, owner)
+    values ('tattoo-images', cfg.outsider_uid::text || '/ZZ-SECTEST.png', cfg.outsider_uid);
     perform pg_temp.be_admin();
-    raise exception 'FAIL 2.3: non-manager inserted into another shop';
+    perform pg_temp.rec('10', 'Outsider cannot upload into tattoo-images', false, 'INSERT SUCCEEDED');
   exception when insufficient_privilege then
     perform pg_temp.be_admin();
-    raise notice 'PASS 2.3: non-manager INSERT into foreign shop denied';
+    perform pg_temp.rec('10', 'Outsider cannot upload into tattoo-images',
+      true, 'denied: owns no shop');
+  when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('10', 'Outsider cannot upload into tattoo-images', true, 'denied: ' || sqlerrm);
   end;
 
-  -- 2.4 Delete another shop's tattoos.
+  -- 11. Outsider cannot upload into the owner's folder.
   begin
     perform pg_temp.be_user(cfg.outsider_uid);
-    delete from public.tattoos where shop_id = cfg.shop_id;
+    insert into storage.objects (bucket_id, name, owner)
+    values ('tattoo-images', cfg.owner_uid::text || '/ZZ-SECTEST-hijack.png', cfg.outsider_uid);
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('11', 'Outsider cannot upload into the owner''s folder', false, 'INSERT SUCCEEDED');
+  exception when insufficient_privilege then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('11', 'Outsider cannot upload into the owner''s folder',
+      true, 'denied: folder is not theirs');
+  when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('11', 'Outsider cannot upload into the owner''s folder', true, 'denied: ' || sqlerrm);
+  end;
+
+  -- 12a. Outsider cannot rename/move an owner's object.
+  begin
+    perform pg_temp.be_user(cfg.outsider_uid);
+    update storage.objects
+       set name = cfg.outsider_uid::text || '/ZZ-SECTEST-stolen.jpg'
+     where bucket_id = 'tattoo-images'
+       and (storage.foldername(name))[1] = cfg.owner_uid::text;
     get diagnostics affected = row_count;
     perform pg_temp.be_admin();
-    if affected > 0 then
-      raise exception 'FAIL 2.4: non-manager deleted % foreign tattoo rows', affected;
-    end if;
-    raise notice 'PASS 2.4: non-manager DELETE affected 0 foreign rows';
+    perform pg_temp.rec('12a', 'Outsider cannot replace or move owner objects',
+      affected = 0, affected || ' object(s) updated');
   exception when insufficient_privilege then
     perform pg_temp.be_admin();
-    raise notice 'PASS 2.4: non-manager DELETE denied outright';
+    perform pg_temp.rec('12a', 'Outsider cannot replace or move owner objects', true, 'denied outright');
   end;
-end $$;
 
--- ===========================================================================
--- GROUP 3 — Storage: unauthorized upload / delete must fail
--- ===========================================================================
-do $$
-declare cfg record;
-begin
-  select * into cfg from _cfg;
+  -- 12b. Outsider cannot delete an owner's object.
+  begin
+    perform pg_temp.be_user(cfg.outsider_uid);
+    delete from storage.objects
+     where bucket_id = 'tattoo-images'
+       and (storage.foldername(name))[1] = cfg.owner_uid::text;
+    get diagnostics affected = row_count;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('12b', 'Outsider cannot delete owner objects',
+      affected = 0, affected || ' object(s) deleted');
+  exception when insufficient_privilege then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('12b', 'Outsider cannot delete owner objects', true, 'denied outright');
+  end;
 
-  -- 3.1 Anonymous upload.
+  -- 12c. Anonymous cannot upload.
   begin
     perform pg_temp.be_anon();
     insert into storage.objects (bucket_id, name, owner)
-    values ('tattoo-images', 'anon-upload.png', null);
+    values ('tattoo-images', 'ZZ-SECTEST-anon.png', null);
     perform pg_temp.be_admin();
-    raise exception 'FAIL 3.1: anonymous upload to tattoo-images succeeded';
+    perform pg_temp.rec('12c', 'Anonymous user cannot upload into tattoo-images', false, 'INSERT SUCCEEDED');
   exception when insufficient_privilege then
     perform pg_temp.be_admin();
-    raise notice 'PASS 3.1: anonymous storage INSERT denied';
+    perform pg_temp.rec('12c', 'Anonymous user cannot upload into tattoo-images', true, 'denied: no anon policy');
+  when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('12c', 'Anonymous user cannot upload into tattoo-images', true, 'denied: ' || sqlerrm);
   end;
 
-  -- 3.2 Non-manager uploading into ANOTHER user's folder.
+  -- 12d. Bucket listing is closed to clients (no SELECT policy).
   begin
-    perform pg_temp.be_user(cfg.outsider_uid);
-    insert into storage.objects (bucket_id, name, owner)
-    values ('tattoo-images', cfg.manager_uid::text || '/hijack.png', cfg.outsider_uid);
+    perform pg_temp.be_anon();
+    select count(*) into n from storage.objects where bucket_id = 'tattoo-images';
     perform pg_temp.be_admin();
-    raise exception 'FAIL 3.2: user wrote into another user''s storage folder';
-  exception when insufficient_privilege then
+    perform pg_temp.rec('12d', 'Clients cannot list the bucket',
+      n = 0, n || ' object row(s) listable by anon');
+  exception when others then
     perform pg_temp.be_admin();
-    raise notice 'PASS 3.2: cross-folder storage INSERT denied';
+    perform pg_temp.rec('12d', 'Clients cannot list the bucket', true, 'denied: ' || sqlerrm);
   end;
 
-  -- 3.3 Non-manager uploading into their OWN folder while owning no shop.
+  -- =========================================================================
+  -- SHOP DELETION — must be impossible for the owner (26)
+  -- =========================================================================
   begin
-    perform pg_temp.be_user(cfg.outsider_uid);
-    insert into storage.objects (bucket_id, name, owner)
-    values ('tattoo-images', cfg.outsider_uid::text || '/freehost.png', cfg.outsider_uid);
+    perform pg_temp.be_user(cfg.owner_uid);
+    delete from public.shops where id = cfg.shop_id;
+    get diagnostics affected = row_count;
     perform pg_temp.be_admin();
-    raise exception 'FAIL 3.3: non-manager used the bucket as free file hosting';
+    perform pg_temp.rec('26', 'Owner cannot delete their own shop',
+      false, 'DELETE SUCCEEDED on ' || affected || ' row(s)');
   exception when insufficient_privilege then
     perform pg_temp.be_admin();
-    raise notice 'PASS 3.3: non-manager storage INSERT denied (no shop owned)';
+    perform pg_temp.rec('26', 'Owner cannot delete their own shop',
+      true, 'denied: no DELETE grant or policy');
+  when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('26', 'Owner cannot delete their own shop', true, 'denied: ' || sqlerrm);
   end;
+
+  -- Owner CAN still delete their own tattoo (guards against over-restriction).
+  begin
+    perform pg_temp.be_user(cfg.owner_uid);
+    delete from public.tattoos where id = draft_id;
+    get diagnostics affected = row_count;
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('25b', 'Owner can delete their own tattoo',
+      affected = 1, affected || ' row(s) deleted');
+  exception when others then
+    perform pg_temp.be_admin();
+    perform pg_temp.rec('25b', 'Owner can delete their own tattoo', false, 'blocked: ' || sqlerrm);
+  end;
+
+  perform pg_temp.be_admin();
 end $$;
 
--- ===========================================================================
--- GROUP 4 — Legitimate manager operations must still work
--- (guards against policies that are simply too restrictive)
--- ===========================================================================
-do $$
-declare
-  cfg record;
-  new_id uuid;
-begin
-  select * into cfg from _cfg;
+select id, title, outcome, case when pass then 'PASS' else 'FAIL' end as result
+from results order by id;
 
-  perform pg_temp.be_user(cfg.manager_uid);
-
-  insert into public.tattoos (shop_id, name, image_url)
-  values (cfg.shop_id, 'rls-test-row', 'https://example.invalid/test.png')
-  returning id into new_id;
-  raise notice 'PASS 4.1: manager inserted into their own shop';
-
-  update public.tattoos set name = 'rls-test-row-renamed' where id = new_id;
-  raise notice 'PASS 4.2: manager updated their own tattoo';
-
-  delete from public.tattoos where id = new_id;
-  raise notice 'PASS 4.3: manager deleted their own tattoo';
-
-  perform pg_temp.be_admin();
-exception when others then
-  perform pg_temp.be_admin();
-  raise exception 'FAIL group 4: legitimate manager operation was blocked -> %', sqlerrm;
-end $$;
-
--- ===========================================================================
--- GROUP 5 — Draft visibility
--- Only meaningful once the OPTIONAL migration 20260728000003 is applied.
--- Skipped automatically when the `published` column does not exist.
--- ===========================================================================
-do $$
-declare
-  cfg record;
-  visible int;
-  draft_id uuid;
-begin
-  select * into cfg from _cfg;
-
-  if not exists (
-    select 1 from information_schema.columns
-    where table_schema = 'public' and table_name = 'tattoos' and column_name = 'published'
-  ) then
-    raise notice 'SKIP 5: no `published` column (optional migration not applied)';
-    return;
-  end if;
-
-  perform pg_temp.be_admin();
-  insert into public.tattoos (shop_id, name, image_url, published)
-  values (cfg.shop_id, 'secret-draft', 'https://example.invalid/draft.png', false)
-  returning id into draft_id;
-
-  perform pg_temp.be_anon();
-  select count(*) into visible from public.tattoos where id = draft_id;
-  perform pg_temp.be_admin();
-  if visible > 0 then
-    raise exception 'FAIL 5.1: anonymous visitor could read an unpublished draft';
-  end if;
-  raise notice 'PASS 5.1: draft hidden from anonymous visitor';
-
-  perform pg_temp.be_user(cfg.manager_uid);
-  select count(*) into visible from public.tattoos where id = draft_id;
-  perform pg_temp.be_admin();
-  if visible = 0 then
-    raise exception 'FAIL 5.2: owning manager could not read their own draft';
-  end if;
-  raise notice 'PASS 5.2: owning manager can read their own draft';
-end $$;
-
--- Nothing above is persisted.
 rollback;

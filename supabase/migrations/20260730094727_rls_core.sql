@@ -1,5 +1,5 @@
 -- =============================================================================
--- 20260730090001_rls_core.sql
+-- 20260730094727_rls_core.sql
 -- Row Level Security and least-privilege grants for public.shops / public.tattoos.
 --
 -- Written against the LIVE schema of project bntoeowrvvhuaypddxnl, inspected
