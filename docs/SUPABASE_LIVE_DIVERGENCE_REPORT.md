@@ -1,5 +1,10 @@
 # Supabase Live Divergence Report
 
+> **Part 1 (below) is the pre-change audit, kept as written.**
+> **Part 2 (at the end) records what was actually applied on 2026-07-30 and how it verified.**
+> **Status: NOT yet VERIFIED FOR MERGE — see §17 for the two gaps.**
+
+
 **Project:** `bntoeowrvvhuaypddxnl` ("TattoAPP") · Postgres 17.6 · us-east-1
 **Inspected:** 2026-07-30, read-only, project resumed from `INACTIVE` → `ACTIVE_HEALTHY`
 **Branch compared:** `security/production-hardening`
@@ -507,3 +512,365 @@ verifying.
   readable over SQL and were not inspected.
 - Edge Function `remove-background` deployment state and its secrets were not inspected;
   the branch's hardened source was reviewed but nothing was deployed.
+
+---
+---
+
+# Part 2 — Applied changes and verification
+
+**Applied:** 2026-07-30, project `bntoeowrvvhuaypddxnl`, kept `ACTIVE_HEALTHY` throughout.
+**Branch:** `security/production-hardening` (pushed as fast-forward; never force-pushed).
+**PR #2:** still **Draft**, unmerged, base `feat/face-tattoo-tryon`.
+
+All UUIDs, credentials, tokens, connection strings and object paths are omitted.
+Identity comparisons were done inside SQL and only the boolean/count recorded.
+
+---
+
+## 10. Migrations applied
+
+Applied one at a time, each in its own transaction, with the resulting policies
+and grants inspected before the next was started. Every file opens with
+fail-closed preconditions and ends asserting its exact resulting policy set.
+
+| # | Version | Name | Result |
+| --- | --- | --- | --- |
+| 1 | `20260730094727` | `rls_core` | applied |
+| 2 | `20260730094818` | `storage_policies` | applied |
+| 3 | `20260730094902` | `published_flag` | applied |
+| 4 | `20260730094958` | `function_hardening` | applied |
+| 5 | `20260730100013` | `private_helper_schema` | applied (advisor-driven follow-up) |
+| 6 | `20260730100217` | `read_policy_and_index_tuning` | applied (advisor-driven follow-up) |
+
+No migration failed, so no rollback or partial state occurred. Filenames in
+`supabase/migrations/` were renamed to match these recorded versions, so a
+future `supabase db push` sees them as already applied.
+
+---
+
+## 11. Policies removed and installed
+
+### Removed (all 12 legacy policies, by their real live names)
+
+- `public.shops` — `shops_select_public`, `shops_update_owner`, `shops_delete_owner`
+- `public.tattoos` — `tattoos_select_public`, `tattoos_insert_owner`, `tattoos_update_owner`, `tattoos_delete_owner`
+- `storage.objects` — `storage_select_all`, `storage_insert_authenticated`, `tattoo_images_public_read`, `tattoo_images_auth_insert`, `tattoo_images_owner_delete`
+
+Verified afterwards: **no legacy policy survived**, and no permissive policy
+exists that was not deliberately created.
+
+### Installed (final state)
+
+| Table | Policy | Cmd | Roles |
+| --- | --- | --- | --- |
+| `public.shops` | `shops: public read` | SELECT | anon, authenticated |
+| `public.shops` | `shops: owner update` | UPDATE | authenticated |
+| `public.tattoos` | `tattoos: anon read published` | SELECT | anon |
+| `public.tattoos` | `tattoos: authenticated read` | SELECT | authenticated |
+| `public.tattoos` | `tattoos: owner insert` | INSERT | authenticated |
+| `public.tattoos` | `tattoos: owner update` | UPDATE | authenticated |
+| `public.tattoos` | `tattoos: owner delete` | DELETE | authenticated |
+| `storage.objects` | `tattoo-images: owner upload` | INSERT | authenticated |
+| `storage.objects` | `tattoo-images: owner update` | UPDATE | authenticated |
+| `storage.objects` | `tattoo-images: owner delete` | DELETE | authenticated |
+
+There is **no DELETE policy on `public.shops`** and **no SELECT policy on
+`storage.objects`** — both deliberate. Every UPDATE policy states USING and
+WITH CHECK explicitly. RLS is `ENABLED` and `FORCED` on both public tables.
+
+---
+
+## 12. Grants before and after
+
+`a`=INSERT `r`=SELECT `w`=UPDATE `d`=DELETE `D`=TRUNCATE `x`=REFERENCES `t`=TRIGGER `m`=MAINTAIN
+
+| Relation | Role | Before | After |
+| --- | --- | --- | --- |
+| `public.shops` | `anon` | `rDxtm` | **`r`** |
+| `public.shops` | `authenticated` | `arwdDxtm` | **`rw`** |
+| `public.shops` | `service_role` | `Dxtm` (no DML at all) | **`arwd`** |
+| `public.tattoos` | `anon` | `rDxtm` | **`r`** |
+| `public.tattoos` | `authenticated` | `arwdDxtm` | **`arwd`** |
+| `public.tattoos` | `service_role` | `Dxtm` (no DML at all) | **`arwd`** |
+
+`TRUNCATE` — which bypasses RLS entirely — is gone from `anon`, `authenticated`
+and `service_role` on both tables. `authenticated` lost INSERT and DELETE on
+`shops`, so self-provisioning and shop deletion are not expressible. The
+`service_role` DML that had been revoked (breaking the documented backend
+provisioning path) is restored, without TRUNCATE.
+
+Storage grants were left alone on purpose: they were made by
+`supabase_storage_admin`, and a `postgres` session cannot revoke another role's
+grants. Access there is governed entirely by the policies above.
+
+### Functions
+
+| Function | Before | After |
+| --- | --- | --- |
+| `public.rls_auto_enable()` | SECURITY DEFINER, EXECUTE to PUBLIC/anon/authenticated/service_role | EXECUTE revoked from all four; owner privilege and the `ensure_rls` event trigger untouched |
+| `owns_shop(uuid)` | did not exist | `private` schema, SECURITY DEFINER, `search_path=''`, EXECUTE to authenticated + service_role only |
+| `is_shop_manager()` | did not exist | `private` schema, SECURITY DEFINER, `search_path=''`, EXECUTE to authenticated + service_role only |
+
+Full-database SECURITY DEFINER inventory was reviewed: the only other three
+(`pgbouncer.get_auth`, `vault.create_secret`, `vault.update_secret`) already have
+`search_path=''` and are not executable by `anon` or `authenticated`. They belong
+to `supabase_admin` and were left untouched. Migration 4 enforces this as an
+assertion, not a claim: it aborts if any SECURITY DEFINER function reachable by
+an API role lacks a fixed `search_path`.
+
+---
+
+## 13. Bucket restrictions before and after
+
+| Setting | Before | After |
+| --- | --- | --- |
+| `public` | `true` | `true` (unchanged — the gallery uses `getPublicUrl`) |
+| `file_size_limit` | **`NULL`** (unlimited) | **`8388608`** (8 MiB) |
+| `allowed_mime_types` | **`NULL`** (anything, incl. SVG/HTML) | **`{image/jpeg, image/png, image/webp}`** |
+| Client listing | possible (2 broad SELECT policies) | not possible (no SELECT policy) |
+| Upload by any signed-in user | **possible, anywhere in the bucket** | owner-folder only, and only for shop owners |
+
+All 3 pre-existing objects were verified compatible before applying (depth 1,
+`owner` set and equal to the folder segment, `image/jpeg`, under 8 MiB, no
+traversal sequences) and all 3 are still present and unmodified.
+
+---
+
+## 14. Test results
+
+`supabase/tests/rls_negative_tests.sql` — run against the final schema, ends in
+`ROLLBACK`. Every assertion executes as `anon` or `authenticated` via
+`SET LOCAL ROLE` + `request.jwt.claims`, which is how PostgREST runs an app
+request. **`postgres` and `service_role` are never used as evidence.**
+
+**27/27 PASS.**
+
+| # | Assertion | Outcome |
+| --- | --- | --- |
+| 01 | Anonymous can read published tattoos | 3 rows visible — PASS |
+| 02 | Anonymous cannot read unpublished tattoos | 0 rows — PASS |
+| 03 | Anonymous cannot insert tattoos | denied, insufficient_privilege — PASS |
+| 04 | Anonymous cannot update tattoos | denied, insufficient_privilege — PASS |
+| 05 | Anonymous cannot delete tattoos | denied, insufficient_privilege — PASS |
+| 06 | Outsider cannot insert tattoos | denied by RLS WITH CHECK — PASS |
+| 07 | Outsider cannot modify an owner's tattoo | 0 rows updated — PASS |
+| 08 | Outsider cannot publish/unpublish | 0 rows updated — PASS |
+| 09a | Outsider cannot change shop ownership | 0 rows updated — PASS |
+| 09b | Nobody can move a tattoo into a shop they do not own | denied by RLS WITH CHECK — PASS |
+| 09c | Owner cannot reassign their shop to another user | denied by RLS WITH CHECK — PASS |
+| 09d | Outsider cannot self-provision a shop | denied, no INSERT grant/policy — PASS |
+| 10 | Outsider cannot upload into `tattoo-images` | denied, owns no shop — PASS |
+| 11 | Outsider cannot upload into the owner's folder | denied, folder not theirs — PASS |
+| 12a | Outsider cannot replace/move owner objects | 0 objects updated — PASS |
+| 12b | Outsider cannot delete owner objects | denied outright — PASS |
+| 12c | Anonymous cannot upload | denied, no anon policy — PASS |
+| 12d | Clients cannot list the bucket | 0 rows listable — PASS |
+| 17 | Owner can create a tattoo, defaulting to unpublished | inserted, `published=false` — PASS |
+| 18 | Owner can read their own unpublished draft | 1 row — PASS |
+| 19 | Owner can edit their own tattoo | 1 row updated — PASS |
+| 20 | Owner can publish their own tattoo | 1 row updated — PASS |
+| 21 | Anonymous can read it after publishing | 1 row — PASS |
+| 22 | Owner can unpublish their own tattoo | 1 row updated — PASS |
+| 23 | Anonymous cannot read it after unpublishing | 0 rows — PASS |
+| 25b | Owner can delete their own tattoo | 1 row deleted — PASS |
+| 26 | **Owner cannot delete their own shop** | denied, no DELETE grant or policy — PASS |
+
+The legitimate-owner assertions (17-22, 25b) matter as much as the denials: a
+policy set that simply denied everything would otherwise look like a pass.
+
+Re-run after the two advisor-driven migrations, plus a targeted check of the
+merged read policy — all PASS:
+
+| Assertion | Outcome |
+| --- | --- |
+| Owner sees published + own drafts | 4 rows — PASS |
+| Signed-in non-manager sees published only | 3 rows — PASS |
+| Anonymous sees published only | 3 rows — PASS |
+| Signed-in non-manager cannot read another shop's draft | 0 rows — PASS |
+
+**Data integrity after all testing:** 1 shop, 3 tattoos (all published), 3 storage
+objects, 1 auth user, 0 leftover test rows, 0 leftover test objects. Nothing was
+deleted or modified; every test ran inside a transaction that rolled back.
+
+### Other verification
+
+| Check | Result |
+| --- | --- |
+| `git diff --check` | clean |
+| `npx tsc --noEmit` | exit 0 |
+| `npm run lint` | exit 0 (3 pre-existing warnings in `app/tryon-webcam.tsx`, untouched by this work) |
+| Python tests (`pytest bg_server/tests/`) | **29 passed** |
+| Expo production export (`expo export --platform web`) | exit 0, 17 routes |
+| Workflow YAML validation | all 3 parse |
+| CI (GitHub) | success on `3e4f200` |
+| Secret scan / Gitleaks (full history, `fetch-depth: 0`) | success on `3e4f200` |
+| CodeQL | success on `3e4f200` — `Analyze (javascript-typescript)` and `Analyze (python)` both green |
+
+---
+
+## 15. CodeQL fix — evidence it worked
+
+Workflow runs by commit:
+
+| Commit | CI | Secret scan | CodeQL |
+| --- | --- | --- | --- |
+| `9ffc548` (before fix) | success | success | **never ran** |
+| `341b399` (fix) | success | success | **success** |
+| `3e4f200` (current) | success | success | **success** |
+
+Cause: `codeql.yml` triggered only on `pull_request: branches: [main]`, and PR #2
+targets `feat/face-tattoo-tryon`. Both `push` and `pull_request` filters now list
+`main` and `feat/face-tattoo-tryon`. Pinned SHAs, least-privilege permissions,
+the javascript-typescript/python matrix and `security-extended` are unchanged;
+both pins were re-verified upstream (`actions/checkout` v7.0.1,
+`github/codeql-action` v4.37.3).
+
+---
+
+## 16. Advisor results
+
+### Security advisor
+
+| Finding | Before | After |
+| --- | --- | --- |
+| `public_bucket_allows_listing` | WARN | **cleared** |
+| `anon_security_definer_function_executable` (`rls_auto_enable`) | WARN | **cleared** |
+| `authenticated_security_definer_function_executable` (`rls_auto_enable`) | WARN | **cleared** |
+| `authenticated_security_definer_function_executable` (`owns_shop`, `is_shop_manager`) | introduced by migrations 1-2 | **cleared** by migration 5 |
+| `auth_leaked_password_protection` | WARN | **still open** — dashboard-only, see §19 |
+
+### Performance advisor
+
+| Finding | Level | Status |
+| --- | --- | --- |
+| `multiple_permissive_policies` on `public.tattoos` | WARN | **cleared** by migration 6 |
+| `unindexed_foreign_keys` on `shops.owner_user_id` | INFO | **cleared** by migration 6 |
+| `unused_index` on `tattoos_published_shop_created_idx` | INFO | **open, expected** |
+| `unused_index` on `shops_owner_user_id_idx` | INFO | **open, expected** |
+
+Both `unused_index` items are the indexes created minutes earlier; they report
+zero scans because no application traffic has reached them yet. They cover the
+gallery read path (`shop_id, created_at desc WHERE published`) and the manager
+dashboard's first query (`shops WHERE owner_user_id = auth.uid()`) respectively.
+Not dismissed — recheck after real traffic and drop them if they stay unused.
+
+---
+
+## 17. Not done — two gaps
+
+### 17.1 The disposable security-test user was NOT created
+
+Creating it needs the Auth Admin API, which needs the `service_role` key. Only
+the publishable/anon key is available locally, and the MCP server exposes
+publishable keys only. Two attempts through the public signup endpoint were
+rejected by GoTrue with `email_address_invalid` — it requires a resolvable mail
+domain, and no throwaway domain is available that would not deliver a real
+confirmation email to a public inbox.
+
+**Confirmed: no test user exists.** `auth.users` still holds exactly 1 row and
+`0` rows matching the attempted test address. Nothing needs deleting.
+
+The outsider role was instead simulated at the SQL layer with a UUID that owns
+no shop. For RLS this is faithful — `auth.uid()` reads the JWT claim and no
+policy joins against `auth.users` — which is why assertions 06-12 are valid
+evidence. It is *not* a substitute for a real token at the HTTP layer.
+
+### 17.2 Storage API-layer assertions 13-16 and 24-25 were NOT run
+
+| # | Assertion | Why not run |
+| --- | --- | --- |
+| 13 | SVG upload is rejected | bucket MIME allowlist is enforced by the Storage API before any row is written; no SQL path reaches it |
+| 14 | HTML upload is rejected | same |
+| 15 | File over 8 MiB is rejected | `file_size_limit` is enforced by the Storage API |
+| 16 | Incorrect MIME type is rejected | same |
+| 24 | Owner can upload an allowed image into their own folder | needs a real owner token; the owner's password is not available and no `service_role` key exists to mint one |
+| 25 | Owner can replace and delete their own test object | same |
+
+The bucket configuration backing 13-16 **is** verified in the database
+(`allowed_mime_types = {image/jpeg,image/png,image/webp}`, `file_size_limit = 8388608`,
+asserted by migration 2's postcondition). What is unverified is the API's
+end-to-end enforcement of it, and that owner uploads still succeed under the new
+policies.
+
+`supabase/tests/storage_api_tests.mjs` is written and ready. To run it, add to a
+gitignored `.env.local` (`.env*` and `.env.local` are already ignored) — do not
+paste these into chat:
+
+```
+SECTEST_OWNER_EMAIL=...        # the existing manager
+SECTEST_OWNER_PASSWORD=...
+SECTEST_OUTSIDER_EMAIL=...     # any account owning no shop
+SECTEST_OUTSIDER_PASSWORD=...
+# or, to have the script provision and delete the outsider itself:
+SUPABASE_SERVICE_ROLE_KEY=...
+```
+
+```bash
+node --env-file=.env --env-file=.env.local supabase/tests/storage_api_tests.mjs
+```
+
+It names every object it creates `<uid>/ZZ-SECTEST-<runId>-*`, deletes them in a
+`finally` block, never touches an object it did not create, and never prints a
+token, password or user id.
+
+---
+
+## 18. Rollback procedure
+
+`supabase/rollback/20260730T0916Z_pre_hardening_state.sql` captures the exact
+pre-change state and restores it. It was updated after migrations 5 and 6, so
+its drop lists cover every policy name any of the six migrations created.
+
+**It cannot lose application data.** Every statement is a policy, grant, flag,
+index or function operation — no `DELETE`, `TRUNCATE`, `DROP TABLE`, or
+`DROP COLUMN` against `shops`, `tattoos`, or `storage.objects`. Restoring changes
+*who may act*, never *what exists*. The only destructive option is commented out
+and clearly marked: dropping the `published` column would discard publication
+state (not rows), and is only for abandoning the feature outright.
+
+Order: Section B (public tables) → Section C (storage + bucket) → Section E
+(function privileges). Section D is policy-only by default.
+
+Running Section C re-opens findings 4.1 and 4.2 — prefer widening
+`allowed_mime_types` over reverting it to `NULL`.
+
+Take a dashboard backup / PITR checkpoint before any rollback. Verification
+queries are in Section F of that file.
+
+---
+
+## 19. Remaining risks
+
+| Risk | Severity | Status |
+| --- | --- | --- |
+| **Public sign-ups are enabled** (`disable_signup = false`) | **Medium** | **Open.** Anyone can create an `authenticated` session and probe the policies. The tests prove a signed-in non-manager can do nothing — but with sign-ups off, that attack surface disappears entirely. Dashboard → Authentication → Sign In / Providers. |
+| Leaked-password protection disabled | Low-Medium | Open. Advisor finding; dashboard → Authentication → Policies. |
+| MFA not enrolled for the manager account | Medium | Open, dashboard-only. A manager can edit and delete all of a shop's content. |
+| Storage API enforcement of MIME/size unverified end-to-end | Medium | Open — §17.2. Config is correct in the DB; the API path is untested. |
+| Owner upload path unverified after the policy change | **Medium** | Open — §17.2. The policies are stricter than before; if `owner` is not populated as expected by some client path, manager uploads would fail. The app writes `<auth.uid()>/<file>` and all 3 existing objects have `owner` set to the uploader, so this is expected to work, but it is not proven. |
+| `supabase_admin` default ACL grants full DML on new `public` tables to `anon` | Low | Open, unfixable from a `postgres` session. Compensated by the `ensure_rls` event trigger, which auto-enables RLS on every new table in `public`. Any new table still needs an explicit `revoke`. |
+| Every published tattoo readable by anyone | Accepted | By design — that is the product. Drafts are now private. |
+| `shops.owner_user_id` readable by anonymous visitors | Accepted | The home screen does `select('*')`. A UUID is not a credential. |
+| PostgREST read rate limiting | Open | Platform-level only; per-user throttling would need an edge proxy. |
+| `shops.owner_user_id` and `tattoos.shop_id` are nullable | Low | A NULL-owner shop is editable by nobody; a NULL-shop tattoo is editable by nobody. Currently 0 of each. Consider `NOT NULL` in a later change. |
+
+Email confirmation was checked and is already required (`mailer_autoconfirm = false`).
+
+---
+
+## 20. Classification
+
+**NOT VERIFIED FOR MERGE.**
+
+Met: no broad legacy policy survived; bucket MIME and size limits are active;
+all 27 RLS/storage-policy assertions pass including the legitimate-owner cases;
+CodeQL, CI, Gitleaks, TypeScript, lint, Expo export and Python tests all pass;
+no credential was exposed; PR #2 remains Draft and unmerged; no temporary test
+data remains.
+
+Outstanding: the required storage API assertions 13-16 and 24-25 have not run,
+and the disposable test user could not be created (§17). Both need one
+credential. Until they pass, the classification stands at not-verified.
+
+**VERIFIED FOR PRODUCTION LAUNCH** additionally requires the Railway and Vercel
+production deployment checks, which are outside this change.
