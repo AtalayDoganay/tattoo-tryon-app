@@ -2,9 +2,20 @@ name: CodeQL
 
 on:
   push:
-    branches: [main]
+    # Long-lived integration branches. A push here is what lands code on a
+    # branch other work is cut from, so it gets a full scan of its own rather
+    # than relying on whatever PR happened to precede it.
+    branches:
+      - main
+      - feat/face-tattoo-tryon
   pull_request:
-    branches: [main]
+    # Both integration branches. Restricting this to `main` meant a PR targeting
+    # feat/face-tattoo-tryon -- which is how the hardening work is being
+    # reviewed -- never got a CodeQL run at all, so the Security tab stayed
+    # silent on exactly the changes that most needed it.
+    branches:
+      - main
+      - feat/face-tattoo-tryon
   schedule:
     # Weekly, so newly-published queries reach existing code without a push.
     - cron: "27 4 * * 1"
