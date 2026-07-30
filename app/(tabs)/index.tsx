@@ -57,6 +57,7 @@ export default function HomeScreen() {
     supabase
       .from('tattoos')
       .select('image_url')
+      .eq('published', true)
       .then(({ data }) => {
         const urls = (data ?? [])
           .map((r: { image_url: string }) => r.image_url)

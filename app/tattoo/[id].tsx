@@ -36,6 +36,7 @@ export default function TattooDetailScreen() {
           .from('tattoos')
           .select('*, shops(name)')
           .eq('id', id)
+          .eq('published', true)
           .single();
 
         if (sbError) throw sbError;

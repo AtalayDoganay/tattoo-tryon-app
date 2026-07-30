@@ -22,6 +22,13 @@ export interface DbTattoo {
   description: string | null;
   image_url: string;
   created_at: string;
+  /**
+   * False hides the row from everyone except the owning shop's manager.
+   * New rows default to false in the database; the RLS policy
+   * "tattoos: published read" is what actually enforces this, so a public
+   * screen that forgets to filter still cannot receive a draft.
+   */
+  published: boolean;
 }
 
 export interface TryOnState {

@@ -34,10 +34,14 @@ export default function GalleryScreen() {
     async function loadTattoos() {
       try {
         setError(null);
+        // Belt and braces: the "tattoos: published read" RLS policy already
+        // withholds drafts from this session, so this filter is a clarity aid
+        // rather than the control.
         const { data, error: sbError } = await supabase
           .from('tattoos')
           .select('*')
           .eq('shop_id', shopId)
+          .eq('published', true)
           .order('created_at', { ascending: false });
 
         if (sbError) throw sbError;

@@ -63,6 +63,8 @@ export default function ManagerDashboard() {
   const [tattoos, setTattoos] = useState<DbTattoo[]>([]);
   const [pageLoading, setPageLoading] = useState(true);
   const [pageError, setPageError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [publishingId, setPublishingId] = useState<string | null>(null);
 
   // Add-tattoo form
   const [showForm, setShowForm] = useState(false);
@@ -118,6 +120,36 @@ export default function ManagerDashboard() {
     if (!error) {
       setTattoos((prev) => prev.filter((t) => t.id !== id));
     }
+  }
+
+  /**
+   * Flips a design between draft and live. Only the owning shop's manager can
+   * do this — the "tattoos: owner update" RLS policy checks shop ownership in
+   * both USING and WITH CHECK, so a request from anyone else updates 0 rows.
+   */
+  async function handleTogglePublished(item: DbTattoo) {
+    const next = !item.published;
+    setPublishingId(item.id);
+    const { data, error } = await supabase
+      .from('tattoos')
+      .update({ published: next })
+      .eq('id', item.id)
+      .select()
+      .single();
+    setPublishingId(null);
+
+    if (error || !data) {
+      // Deliberately not setPageError: that state gates the whole dashboard
+      // behind an error screen, and a failed toggle should not hide the list.
+      setActionError(
+        next ? 'Could not publish that design.' : 'Could not unpublish that design.'
+      );
+      return;
+    }
+    setActionError(null);
+    setTattoos((prev) =>
+      prev.map((t) => (t.id === item.id ? (data as DbTattoo) : t))
+    );
   }
 
   async function pickImage() {
@@ -193,6 +225,10 @@ export default function ManagerDashboard() {
           style: formStyle.trim() || null,
           description: formDesc.trim() || null,
           image_url,
+          // New designs start as drafts and are published deliberately. The
+          // column default is also false, so omitting this would be equivalent
+          // -- it is sent explicitly so the intent survives a schema change.
+          published: false,
         })
         .select()
         .single();
@@ -221,19 +257,60 @@ export default function ManagerDashboard() {
   }
 
   function renderRow({ item }: { item: DbTattoo }) {
+    const isBusy = publishingId === item.id;
+
     return (
       <View style={styles.row}>
         <View style={styles.rowInfo}>
           <Text style={styles.rowName} numberOfLines={1}>
             {item.name}
           </Text>
-          {item.style ? (
-            <View style={styles.stylePill}>
-              <Text style={styles.stylePillText}>{item.style}</Text>
+          <View style={styles.pillRow}>
+            <View style={item.published ? styles.livePill : styles.draftPill}>
+              <Text
+                style={
+                  item.published ? styles.livePillText : styles.draftPillText
+                }
+              >
+                {item.published ? 'Live' : 'Draft'}
+              </Text>
             </View>
-          ) : null}
+            {item.style ? (
+              <View style={styles.stylePill}>
+                <Text style={styles.stylePillText}>{item.style}</Text>
+              </View>
+            ) : null}
+          </View>
         </View>
         <View style={styles.rowActions}>
+          <Pressable
+            onPress={() => handleTogglePublished(item)}
+            disabled={isBusy}
+            accessibilityRole="button"
+            accessibilityLabel={
+              item.published
+                ? `Unpublish ${item.name}`
+                : `Publish ${item.name}`
+            }
+            style={({ pressed }: { pressed: boolean }) => [
+              item.published ? styles.unpublishBtn : styles.publishBtn,
+              { opacity: pressed || isBusy ? 0.7 : 1 },
+            ]}
+          >
+            {isBusy ? (
+              <ActivityIndicator color={AppTheme.text} size="small" />
+            ) : (
+              <Text
+                style={
+                  item.published
+                    ? styles.unpublishBtnText
+                    : styles.publishBtnText
+                }
+              >
+                {item.published ? 'Unpublish' : 'Publish'}
+              </Text>
+            )}
+          </Pressable>
           <Pressable
             onPress={() => setFormError('Editing is not available yet.')}
             style={({ pressed }: { pressed: boolean }) => [
@@ -369,7 +446,10 @@ export default function ManagerDashboard() {
           </Pressable>
         </ScrollView>
       ) : (
-        <View style={{ flex: 1 }}>
+        <View style={styles.listWrap}>
+          {actionError ? (
+            <Text style={styles.actionError}>{actionError}</Text>
+          ) : null}
           <FlatList
             data={tattoos}
             keyExtractor={(item: DbTattoo) => item.id}
@@ -446,6 +526,16 @@ const styles = StyleSheet.create({
     fontFamily: Fonts?.sans ?? 'system-ui',
   },
   // List
+  listWrap: {
+    flex: 1,
+  },
+  actionError: {
+    color: AppTheme.accent,
+    fontSize: 13,
+    fontFamily: Fonts?.sans ?? 'system-ui',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
   listContent: {
     padding: 16,
     paddingBottom: 100,
@@ -472,6 +562,41 @@ const styles = StyleSheet.create({
     fontFamily: Fonts?.sans ?? 'system-ui',
     fontWeight: '600',
   },
+  pillRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  // Publication state. Live borrows the accent; Draft stays deliberately quiet
+  // so an unpublished design reads as incomplete rather than as an error.
+  livePill: {
+    alignSelf: 'flex-start',
+    backgroundColor: AppTheme.accent,
+    borderRadius: 20,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  livePillText: {
+    color: AppTheme.text,
+    fontSize: 11,
+    fontWeight: '700',
+    fontFamily: Fonts?.sans ?? 'system-ui',
+  },
+  draftPill: {
+    alignSelf: 'flex-start',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: AppTheme.border,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  draftPillText: {
+    color: AppTheme.muted,
+    fontSize: 11,
+    fontWeight: '700',
+    fontFamily: Fonts?.sans ?? 'system-ui',
+  },
   stylePill: {
     alignSelf: 'flex-start',
     backgroundColor: AppTheme.accent,
@@ -487,7 +612,39 @@ const styles = StyleSheet.create({
   },
   rowActions: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
+  },
+  publishBtn: {
+    minWidth: 78,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: AppTheme.accent,
+  },
+  publishBtnText: {
+    color: AppTheme.text,
+    fontSize: 12,
+    fontFamily: Fonts?.sans ?? 'system-ui',
+    fontWeight: '700',
+  },
+  unpublishBtn: {
+    minWidth: 78,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: AppTheme.border,
+  },
+  unpublishBtnText: {
+    color: AppTheme.muted,
+    fontSize: 12,
+    fontFamily: Fonts?.sans ?? 'system-ui',
+    fontWeight: '600',
   },
   editBtn: {
     paddingVertical: 6,

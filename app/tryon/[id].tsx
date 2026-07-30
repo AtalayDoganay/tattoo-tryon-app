@@ -38,6 +38,7 @@ export default function TryOnScreen() {
       .from('tattoos')
       .select('*')
       .eq('id', id)
+      .eq('published', true)
       .single()
       .then(({ data }) => {
         if (data) setTattoo(data as DbTattoo);
