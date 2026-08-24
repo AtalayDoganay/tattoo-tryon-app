@@ -3,4 +3,4 @@
 
 pytest==9.1.1
 # Dependency vulnerability audit (used by the CI workflow).
-pip-audit==2.9.0
+pip-audit==2.10.1
