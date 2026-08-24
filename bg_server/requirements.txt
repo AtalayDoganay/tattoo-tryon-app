@@ -15,9 +15,9 @@ flask-cors==6.0.5
 flask-limiter==4.1.1
 # Shared rate-limit backend. Required in production: the in-memory default is
 # per-worker and does not limit anything across Gunicorn workers.
-redis==8.0.1
+redis==8.1.0
 # Production WSGI server. Flask's dev server is never used in the container.
-gunicorn==26.0.0
+gunicorn==26.1.0
 
 # --- authentication ----------------------------------------------------------
 # PyJWT verifies Supabase access tokens; cryptography provides the ES256/RS256
@@ -28,7 +28,7 @@ requests==2.34.2
 
 # --- image processing --------------------------------------------------------
 pillow==12.3.0
-numpy==2.5.1
-rembg==2.0.77
-onnxruntime==1.28.0
+numpy==2.5.2
+rembg==2.0.81
+onnxruntime==1.29.0
 scikit-image==0.26.0
